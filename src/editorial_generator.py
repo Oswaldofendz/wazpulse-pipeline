@@ -92,7 +92,10 @@ def _process_one(candidate: dict) -> Optional[str]:
     """Process one candidate. Returns None on success, error string on failure."""
     payload  = candidate.get("payload") or {}
     summary  = payload.get("summary", "") or ""
-    lang     = payload.get("language") or "es"
+    # Force Spanish output regardless of source language. WaCapital is a Spanish-
+    # speaking brand and Groq handles the translation implicitly while it builds
+    # the angle/headlines/tweets — no separate translation pass needed.
+    lang     = "es"
 
     try:
         angle = wastake_client.get_news_angle(
