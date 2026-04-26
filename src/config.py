@@ -24,6 +24,7 @@ TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 # --- Tunables ---
 CYCLE_INTERVAL_SECONDS = int(os.getenv("CYCLE_INTERVAL_SECONDS", "300"))
 LOG_LEVEL              = os.getenv("LOG_LEVEL", "INFO").upper()
+BLOQUE_ACTUAL          = int(os.getenv("BLOQUE_ACTUAL", "4"))
 
 
 def assert_required_for_bloque(bloque: int) -> None:

@@ -1,20 +1,20 @@
 """
 WazPulse PulseEngine — entry point.
 
-Bloque 4 scope:
-  - Validate env
-  - Connect to Supabase with service_role key
-  - Every CYCLE_INTERVAL_SECONDS, log a sanity-check cycle ("tick")
-  - No RSS, no editorial generation, no Telegram yet
+Behaviour per BLOQUE_ACTUAL env var:
+  - 4: just connect to Supabase and log row counts (sanity check)
+  - 5+: run the RSS fetcher, write new candidates to pulse_candidates
 
-Later bloques wire in the real work inside `tick()`.
+The tick() loop catches all exceptions so a single bad cycle never crashes
+the container. Watch Deploy Logs for ERROR lines — Railway "Active" badge
+does NOT mean cycles are succeeding.
 """
 import logging
 import signal
 import sys
 import time
 
-from . import config
+from . import config, rss_fetcher
 from .supabase_client import count_candidates, count_sources_active
 
 logging.basicConfig(
@@ -33,29 +33,45 @@ def _handle_sigterm(signum, _frame):
     _shutdown = True
 
 
+def _tick_bloque4(cycle_n: int) -> None:
+    candidates = count_candidates()
+    sources    = count_sources_active()
+    log.info(
+        "cycle %d sanity — pulse_candidates=%d, active_sources=%d",
+        cycle_n, candidates, sources,
+    )
+
+
+def _tick_bloque5(cycle_n: int) -> None:
+    log.info("cycle %d starting RSS fetch", cycle_n)
+    stats = rss_fetcher.run_one_cycle()
+    log.info(
+        "cycle %d done — sources=%d ok=%d errors=%d fetched=%d NEW=%d dup=%d old=%d",
+        cycle_n,
+        stats["sources"], stats["source_ok"], stats["source_errors"],
+        stats["fetched"], stats["new"], stats["skipped_dup"], stats["skipped_old"],
+    )
+
+
 def tick(cycle_n: int) -> None:
-    """One cycle of work. For now: log DB sanity."""
+    """Dispatch one cycle of work based on BLOQUE_ACTUAL."""
     try:
-        candidates = count_candidates()
-        sources    = count_sources_active()
-        log.info(
-            "cycle %d tick — pulse_candidates=%d, active_sources=%d",
-            cycle_n, candidates, sources,
-        )
+        if config.BLOQUE_ACTUAL >= 5:
+            _tick_bloque5(cycle_n)
+        else:
+            _tick_bloque4(cycle_n)
     except Exception as e:
-        # Never crash the loop on a single bad cycle — log and continue.
         log.exception("cycle %d failed: %s", cycle_n, e)
 
 
 def main() -> None:
-    config.assert_required_for_bloque(4)
+    config.assert_required_for_bloque(config.BLOQUE_ACTUAL)
     signal.signal(signal.SIGTERM, _handle_sigterm)
     signal.signal(signal.SIGINT,  _handle_sigterm)
 
     log.info(
-        "WazPulse PulseEngine starting — interval=%ds, wastake_api=%s",
-        config.CYCLE_INTERVAL_SECONDS,
-        config.WASTAKE_API_URL,
+        "WazPulse PulseEngine starting — bloque=%d, interval=%ds, wastake_api=%s",
+        config.BLOQUE_ACTUAL, config.CYCLE_INTERVAL_SECONDS, config.WASTAKE_API_URL,
     )
 
     cycle_n = 0
