@@ -14,7 +14,7 @@ import signal
 import sys
 import time
 
-from . import config, rss_fetcher
+from . import config, rss_fetcher, editorial_generator
 from .supabase_client import count_candidates, count_sources_active
 
 logging.basicConfig(
@@ -46,17 +46,31 @@ def _tick_bloque5(cycle_n: int) -> None:
     log.info("cycle %d starting RSS fetch", cycle_n)
     stats = rss_fetcher.run_one_cycle()
     log.info(
-        "cycle %d done — sources=%d ok=%d errors=%d fetched=%d NEW=%d dup=%d old=%d",
+        "cycle %d RSS done — sources=%d ok=%d errors=%d fetched=%d NEW=%d dup=%d old=%d",
         cycle_n,
         stats["sources"], stats["source_ok"], stats["source_errors"],
         stats["fetched"], stats["new"], stats["skipped_dup"], stats["skipped_old"],
     )
 
 
+def _tick_bloque6(cycle_n: int) -> None:
+    # 1) RSS fetch first — keeps the candidate inbox fresh.
+    _tick_bloque5(cycle_n)
+    # 2) Editorial generation on pending candidates.
+    log.info("cycle %d starting editorial generation", cycle_n)
+    stats = editorial_generator.run_one_cycle()
+    log.info(
+        "cycle %d editorial done — picked=%d generated=%d errors=%d",
+        cycle_n, stats["pending_picked"], stats["generated"], stats["errors"],
+    )
+
+
 def tick(cycle_n: int) -> None:
     """Dispatch one cycle of work based on BLOQUE_ACTUAL."""
     try:
-        if config.BLOQUE_ACTUAL >= 5:
+        if config.BLOQUE_ACTUAL >= 6:
+            _tick_bloque6(cycle_n)
+        elif config.BLOQUE_ACTUAL >= 5:
             _tick_bloque5(cycle_n)
         else:
             _tick_bloque4(cycle_n)
