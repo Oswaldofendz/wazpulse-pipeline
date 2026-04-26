@@ -14,9 +14,14 @@ def get_client() -> Client:
 
 
 def count_candidates() -> int:
-    """Sanity check: total rows in pulse_candidates (any status)."""
+    """Sanity check: total rows in pulse_candidates (any status).
+
+    Uses .limit(1) instead of head=True (head was added in supabase-py 2.10+,
+    but requirements.txt pins 2.7.4). Count comes from the Content-Range header
+    that Supabase populates when count="exact".
+    """
     client = get_client()
-    res = client.table("pulse_candidates").select("id", count="exact", head=True).execute()
+    res = client.table("pulse_candidates").select("id", count="exact").limit(1).execute()
     return res.count or 0
 
 
@@ -25,8 +30,9 @@ def count_sources_active() -> int:
     client = get_client()
     res = (
         client.table("pulse_sources_config")
-        .select("id", count="exact", head=True)
+        .select("id", count="exact")
         .eq("is_active", True)
+        .limit(1)
         .execute()
     )
     return res.count or 0
