@@ -24,6 +24,7 @@ Deferred to Bloque 6c:
   - Card image generation (card_image_url/path remain NULL for now).
 """
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -34,6 +35,9 @@ log = logging.getLogger("editorial-gen")
 
 # Throughput knob. Cycles run every 5 min; 5 candidates/cycle = 60/hour.
 MAX_PER_CYCLE = 5
+# Pause between candidates to avoid Groq per-second rate limit (backend
+# converts Groq 429 into 502, which we were seeing in cycle 2 of Bloque 6b).
+INTER_CANDIDATE_SLEEP_SEC = 2
 
 # pulse_posts.headline is varchar — keep it sane.
 MAX_HEADLINE_LEN = 500
@@ -63,14 +67,44 @@ def _detect_asset(headline: Optional[str]) -> Optional[str]:
     return None
 
 
-def _semaforo_for(asset_id: Optional[str], snapshot: Optional[dict]) -> str:
-    """Look up snapshot semáforo for an asset. Defaults to neutral on any miss."""
-    if not asset_id or not snapshot:
-        return "neutral"
-    for s in snapshot.get("semaforos") or []:
-        if s.get("id") == asset_id:
-            return s.get("semaforo") or "neutral"
-    return "neutral"
+def _semaforo_for(asset_id: Optional[str], snapshot: Optional[dict]) -> tuple[str, str]:
+    """
+    Resolve a semáforo for the post. Returns (semaforo, source) so we can audit
+    in compliance_flags.
+
+    Priority:
+      1. snapshot-asset  — headline matched a tracked asset (BTC/ETH/SOL/SPY/Gold)
+                           → use that asset's live semaforo from the snapshot.
+      2. snapshot-macro  — no asset match but snapshot is available → derive
+                           from market-wide flags (stress / momentum / Fear&Greed).
+      3. default-neutral — snapshot unavailable.
+    """
+    if not snapshot:
+        return "neutral", "default-neutral"
+
+    # 1. Asset-specific lookup wins if available.
+    if asset_id:
+        for s in snapshot.get("semaforos") or []:
+            if s.get("id") == asset_id:
+                return (s.get("semaforo") or "neutral"), "snapshot-asset"
+
+    # 2. Macro fallback — most news is about individual stocks not in our 5-asset
+    # tracked list, so without this everything would default to neutral. Instead
+    # we tint the post with the current market mood:
+    #   rojo    = stress or extreme F&G  → cautionary
+    #   verde   = 4+ tracked assets bullish AND F&G not in deep fear (≥45)
+    #   amarillo = anything else (default "watch")
+    flags  = snapshot.get("flags")  or {}
+    market = snapshot.get("market") or {}
+    fg     = market.get("fearGreed") or {}
+    fg_val = fg.get("value", 50) or 50
+    strong = flags.get("strongSignalsCount") or 0
+
+    if flags.get("feargreedExtreme") or flags.get("marketStressed"):
+        return "rojo", "snapshot-macro"
+    if strong >= 4 and fg_val >= 45:
+        return "verde", "snapshot-macro"
+    return "amarillo", "snapshot-macro"
 
 
 def _market_context(snapshot: Optional[dict]) -> dict:
@@ -81,13 +115,14 @@ def _market_context(snapshot: Optional[dict]) -> dict:
     flags  = snapshot.get("flags")  or {}
     fg     = market.get("fearGreed") or {}
     return {
-        "fearGreed":         fg.get("value"),
-        "fearGreedClass":    fg.get("classification"),
-        "marketStressed":    flags.get("marketStressed"),
-        "macroEventSoon":    flags.get("macroEventSoon"),
-        "bigWhaleActivity":  flags.get("bigWhaleActivity"),
-        "feargreedExtreme":  flags.get("feargreedExtreme"),
-        "calendarSource":    snapshot.get("calendarSource"),
+        "fearGreed":           fg.get("value"),
+        "fearGreedClass":      fg.get("classification"),
+        "marketStressed":      flags.get("marketStressed"),
+        "macroEventSoon":      flags.get("macroEventSoon"),
+        "bigWhaleActivity":    flags.get("bigWhaleActivity"),
+        "feargreedExtreme":    flags.get("feargreedExtreme"),
+        "strongSignalsCount":  flags.get("strongSignalsCount"),
+        "calendarSource":      snapshot.get("calendarSource"),
     }
 
 
@@ -123,9 +158,9 @@ def _compose_post(candidate: dict, angle: dict, snapshot: Optional[dict]) -> dic
     ig_caption      = (angle.get("instagram_caption") or "").strip() or copy_twitter
     chosen_headline = (headlines[0] if headlines else candidate["headline"])[:MAX_HEADLINE_LEN]
 
-    asset_id  = _detect_asset(candidate.get("headline"))
-    semaforo  = _semaforo_for(asset_id, snapshot)
-    asset_aff = asset_id or candidate.get("asset_id")  # detected wins, else upstream
+    asset_id            = _detect_asset(candidate.get("headline"))
+    semaforo, sema_src  = _semaforo_for(asset_id, snapshot)
+    asset_aff           = asset_id or candidate.get("asset_id")  # detected wins, else upstream
 
     return {
         "candidate_id":    candidate["id"],
@@ -143,12 +178,12 @@ def _compose_post(candidate: dict, angle: dict, snapshot: Optional[dict]) -> dic
         "status":          "generated",
         "compliance_flags": {
             "angle_strength":   angle.get("strength"),
-            "angle_reasoning":  angle.get("reasoning"),
+            "angle_reasoning": angle.get("reasoning"),
             "angle_hook":       hook,
             "angle_cached":     angle.get("cached", False),
             "asset_match": {
                 "detected_asset":  asset_id,
-                "semaforo_source": "snapshot" if asset_id and snapshot else "default-neutral",
+                "semaforo_source": sema_src,   # snapshot-asset | snapshot-macro | default-neutral
             },
             "market_context": _market_context(snapshot),
         },
@@ -214,7 +249,13 @@ def run_one_cycle() -> dict:
     except Exception as e:
         log.warning("snapshot fetch failed (posts will use neutral semaforo): %s", e)
 
-    for cand in candidates:
+    for i, cand in enumerate(candidates):
+        # Throttle: pause between candidates to keep Groq under per-second rate limit.
+        # Sleeping BEFORE the call (skipping the first one) means a cycle of N takes
+        # roughly (N-1) * SLEEP + sum(api_times) seconds.
+        if i > 0:
+            time.sleep(INTER_CANDIDATE_SLEEP_SEC)
+
         head = (cand.get("headline") or "")[:70]
         asset_match = _detect_asset(cand.get("headline"))
         if asset_match:
