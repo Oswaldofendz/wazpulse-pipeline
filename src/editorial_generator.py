@@ -33,11 +33,13 @@ from .supabase_client import get_client
 
 log = logging.getLogger("editorial-gen")
 
-# Throughput knob. Cycles run every 5 min; 5 candidates/cycle = 60/hour.
-MAX_PER_CYCLE = 5
-# Pause between candidates to avoid Groq per-second rate limit (backend
-# converts Groq 429 into 502, which we were seeing in cycle 2 of Bloque 6b).
-INTER_CANDIDATE_SLEEP_SEC = 2
+# Throughput knob. Cycles run every 5 min; 2 candidates/cycle = 24/hour.
+# Conservative because Groq is shared with snapshot sentiment fallback and the
+# /narrative endpoint, so saturation triggers 502s from the backend. RSS fetcher
+# typically adds ~3-5 candidates/cycle; 24/hour is enough to stay even.
+MAX_PER_CYCLE = 2
+# Pause between candidates to spread out Groq calls.
+INTER_CANDIDATE_SLEEP_SEC = 5
 
 # pulse_posts.headline is varchar — keep it sane.
 MAX_HEADLINE_LEN = 500
