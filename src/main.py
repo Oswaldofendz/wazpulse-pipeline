@@ -14,7 +14,7 @@ import signal
 import sys
 import time
 
-from . import config, rss_fetcher, editorial_generator
+from . import config, rss_fetcher, editorial_generator, telegram_bot
 from .supabase_client import count_candidates, count_sources_active
 
 logging.basicConfig(
@@ -65,10 +65,26 @@ def _tick_bloque6(cycle_n: int) -> None:
     )
 
 
+def _tick_bloque7(cycle_n: int) -> None:
+    # 1+2: RSS + editorial (existing).
+    _tick_bloque6(cycle_n)
+    # 3: Telegram approval bot (send pending + process callbacks).
+    log.info("cycle %d starting Telegram bot step", cycle_n)
+    stats = telegram_bot.run_one_cycle()
+    log.info(
+        "cycle %d Telegram done — sent=%d (eligible=%d) | callbacks: approved=%d rejected=%d skipped=%d",
+        cycle_n,
+        stats["send"]["sent"], stats["send"]["eligible"],
+        stats["callbacks"]["approved"], stats["callbacks"]["rejected"], stats["callbacks"]["skipped"],
+    )
+
+
 def tick(cycle_n: int) -> None:
     """Dispatch one cycle of work based on BLOQUE_ACTUAL."""
     try:
-        if config.BLOQUE_ACTUAL >= 6:
+        if config.BLOQUE_ACTUAL >= 7:
+            _tick_bloque7(cycle_n)
+        elif config.BLOQUE_ACTUAL >= 6:
             _tick_bloque6(cycle_n)
         elif config.BLOQUE_ACTUAL >= 5:
             _tick_bloque5(cycle_n)
