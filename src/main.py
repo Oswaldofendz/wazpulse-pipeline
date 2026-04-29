@@ -63,6 +63,14 @@ def _tick_bloque6(cycle_n: int) -> None:
         "cycle %d editorial done — picked=%d generated=%d errors=%d",
         cycle_n, stats["pending_picked"], stats["generated"], stats["errors"],
     )
+    # 3) Card backfill — generate images for posts that still don't have one.
+    #    LLM-independent: drains the historical backlog while news-angle is rate-limited.
+    log.info("cycle %d card backfill", cycle_n)
+    bf = editorial_generator.backfill_cards()
+    log.info(
+        "cycle %d backfill done — picked=%d generated=%d errors=%d",
+        cycle_n, bf["picked"], bf["generated"], bf["errors"],
+    )
 
 
 def _tick_bloque7(cycle_n: int) -> None:

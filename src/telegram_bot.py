@@ -76,6 +76,21 @@ def _send_message(text: str, reply_markup: Optional[dict] = None) -> dict:
     return resp.json()
 
 
+def _send_photo(photo_url: str, caption: str, reply_markup: Optional[dict] = None) -> dict:
+    """sendPhoto with optional caption. Caption hard limit is 1024 chars."""
+    body = {
+        "chat_id":    int(config.TELEGRAM_CHAT_ID),
+        "photo":      photo_url,
+        "caption":    caption[:1024],   # safety truncate
+        "parse_mode": "HTML",
+    }
+    if reply_markup:
+        body["reply_markup"] = reply_markup
+    resp = requests.post(_api_url("sendPhoto"), json=body, timeout=HTTP_TIMEOUT)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def _get_updates(offset: int) -> list[dict]:
     # timeout=0 → short polling (returns immediately if nothing pending).
     body = {"offset": offset, "timeout": 0}
@@ -131,15 +146,15 @@ def _escape_html(text: str) -> str:
     return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _format_message(post: dict) -> str:
+def _common_header(post: dict) -> tuple[str, str]:
+    """Return (header_block, market_line) reused by both message styles."""
     semaforo = post.get("semaforo") or "neutral"
     flag     = SEMAFORO_EMOJI.get(semaforo, "⚪")
     asset    = post.get("asset_affected") or "general"
 
-    flags     = post.get("compliance_flags") or {}
-    strength  = flags.get("angle_strength", 3)
-    reasoning = flags.get("angle_reasoning") or ""
-    market    = flags.get("market_context") or {}
+    flags    = post.get("compliance_flags") or {}
+    strength = flags.get("angle_strength", 3)
+    market   = flags.get("market_context") or {}
 
     fg       = market.get("fearGreed", "?")
     fg_class = market.get("fearGreedClass", "?")
@@ -150,13 +165,24 @@ def _format_message(post: dict) -> str:
     if market.get("bigWhaleActivity"):  alerts.append("🐳 whale active")
     market_line = " · ".join(alerts) if alerts else f"F&G {fg} ({fg_class})"
 
-    headline   = (post.get("headline") or "")[:200]
-    twitter    = (post.get("copy_twitter") or "")
-    instagram  = (post.get("copy_instagram") or "")
-    source     = post.get("source_link") or ""
+    header = f"{flag} <b>{_escape_html(asset.upper())}</b> · ⭐ {strength}/5"
+    return header, market_line
+
+
+def _format_message_text(post: dict) -> str:
+    """Full text-only message (used when no card image is available)."""
+    header, market_line = _common_header(post)
+
+    flags     = post.get("compliance_flags") or {}
+    reasoning = flags.get("angle_reasoning") or ""
+
+    headline  = (post.get("headline") or "")[:200]
+    twitter   = (post.get("copy_twitter") or "")
+    instagram = (post.get("copy_instagram") or "")
+    source    = post.get("source_link") or ""
 
     parts = [
-        f"{flag} <b>{_escape_html(asset.upper())}</b> · ⭐ {strength}/5",
+        header,
         _escape_html(market_line),
         "",
         f"<b>{_escape_html(headline)}</b>",
@@ -166,6 +192,28 @@ def _format_message(post: dict) -> str:
         "",
         "📷 <i>Instagram:</i>",
         _escape_html(instagram[:600]),
+    ]
+    if source:
+        parts += ["", f'🌐 <a href="{_escape_html(source)}">Fuente</a>']
+    if reasoning:
+        parts += ["", f"<i>🤖 {_escape_html(reasoning)}</i>"]
+    return "\n".join(parts)
+
+
+def _format_caption(post: dict) -> str:
+    """Compact caption for sendPhoto (1024 char limit). Card itself carries
+    the headline and asset visually, so we only need the contextual layer here."""
+    header, market_line = _common_header(post)
+    flags     = post.get("compliance_flags") or {}
+    reasoning = (flags.get("angle_reasoning") or "")[:200]
+    twitter   = (post.get("copy_twitter") or "")[:240]
+    source    = post.get("source_link") or ""
+
+    parts = [
+        header,
+        _escape_html(market_line),
+        "",
+        _escape_html(twitter),
     ]
     if source:
         parts += ["", f'🌐 <a href="{_escape_html(source)}">Fuente</a>']
@@ -195,7 +243,7 @@ def _list_eligible_posts(limit_pool: int = 50) -> list[dict]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=RECENT_HOURS)).isoformat()
     res = (
         client.table("pulse_posts")
-        .select("id, headline, semaforo, asset_affected, copy_twitter, copy_instagram, source_link, compliance_flags, created_at")
+        .select("id, headline, semaforo, asset_affected, copy_twitter, copy_instagram, source_link, compliance_flags, created_at, card_image_url")
         .eq("status", "generated")
         .gte("created_at", cutoff)
         .order("created_at", desc=True)
@@ -220,12 +268,19 @@ def send_pending() -> dict:
     for post in eligible:
         post_id = post["id"]
         try:
-            text = _format_message(post)
-            keyboard = _build_keyboard(post_id)
-            response = _send_message(text, reply_markup=keyboard)
+            keyboard  = _build_keyboard(post_id)
+            card_url  = post.get("card_image_url")
+            if card_url:
+                # Visual: photo + compact caption
+                caption  = _format_caption(post)
+                response = _send_photo(card_url, caption, reply_markup=keyboard)
+            else:
+                # Fallback: text-only (legacy posts without card)
+                text     = _format_message_text(post)
+                response = _send_message(text, reply_markup=keyboard)
             message_id = response.get("result", {}).get("message_id")
             if not message_id:
-                raise RuntimeError(f"sendMessage returned no message_id: {response}")
+                raise RuntimeError(f"telegram returned no message_id: {response}")
 
             client.table("pulse_posts").update({
                 "telegram_message_id": message_id,

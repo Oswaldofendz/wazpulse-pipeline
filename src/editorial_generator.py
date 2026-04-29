@@ -243,6 +243,59 @@ def _process_one(candidate: dict, snapshot: Optional[dict]) -> Optional[str]:
     return None
 
 
+# ─── Card backfill ──────────────────────────────────────────────────────────
+
+# How many cards to backfill per cycle. With 5min cycles and ~1500 posts
+# missing cards, 10/cycle drains in ~12.5h. Goes up if we want faster.
+CARD_BACKFILL_PER_CYCLE = 10
+
+
+def backfill_cards() -> dict:
+    """
+    Pick N posts without a card_image_url and generate cards for them.
+    Independent of the LLM — runs purely off the data already in pulse_posts.
+
+    Targets posts that could still be published (generated / pending_approval /
+    approved). Skips rejected/failed/archived because we won't post those anyway.
+    """
+    client = get_client()
+    res = (
+        client.table("pulse_posts")
+        .select("id, candidate_id, headline, semaforo, asset_affected, copy_twitter, source_link")
+        .is_("card_image_url", "null")
+        .in_("status", ["generated", "pending_approval", "approved"])
+        .order("created_at", desc=True)
+        .limit(CARD_BACKFILL_PER_CYCLE)
+        .execute()
+    )
+    posts = res.data or []
+
+    stats = {"picked": len(posts), "generated": 0, "errors": 0}
+    if not posts:
+        return stats
+
+    for post in posts:
+        # Storage path uses candidate_id when available, else falls back to post id.
+        cid = post.get("candidate_id") or post.get("id")
+        url, path = card_generator.render_and_upload(post, candidate_id=cid)
+        if not url:
+            stats["errors"] += 1
+            log.warning("  backfill render/upload failed post=%s", post["id"])
+            continue
+        try:
+            client.table("pulse_posts").update({
+                "card_image_url":  url,
+                "card_image_path": path,
+            }).eq("id", post["id"]).execute()
+            stats["generated"] += 1
+            log.info("  backfill OK post=%s -> %s", post["id"], path)
+        except Exception as e:
+            stats["errors"] += 1
+            log.warning("  backfill DB update failed post=%s: %s", post["id"], e)
+
+    return stats
+
+
 def run_one_cycle() -> dict:
     candidates = _list_pending(MAX_PER_CYCLE)
     totals = {
