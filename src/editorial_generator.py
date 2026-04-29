@@ -28,7 +28,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import wastake_client
+from . import wastake_client, card_generator
 from .supabase_client import get_client
 
 log = logging.getLogger("editorial-gen")
@@ -217,6 +217,18 @@ def _process_one(candidate: dict, snapshot: Optional[dict]) -> Optional[str]:
 
     try:
         post = _compose_post(candidate, angle, snapshot)
+    except Exception as e:
+        return f"post compose failed: {e}"
+
+    # Render + upload the card image. Best-effort: a failure here doesn't
+    # block insertion — the post still goes in with NULL image URLs and
+    # we'll backfill later from a maintenance script if needed.
+    url, path = card_generator.render_and_upload(post, candidate_id=candidate["id"])
+    if url:
+        post["card_image_url"]  = url
+        post["card_image_path"] = path
+
+    try:
         client = get_client()
         client.table("pulse_posts").insert(post).execute()
     except Exception as e:
