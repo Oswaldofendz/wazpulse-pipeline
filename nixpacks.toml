@@ -1,0 +1,8 @@
+# Nixpacks build config.
+# Installs system fonts so Pillow has reliable TTFs to load.
+# Our card_generator.py falls back to /usr/share/fonts/truetype/dejavu/...
+# and /usr/share/fonts/truetype/liberation/... — both come from the apt
+# packages below.
+
+[phases.setup]
+aptPkgs = ["fonts-dejavu-core", "fonts-liberation"]

@@ -90,13 +90,19 @@ SYSTEM_REGULAR = [
 
 
 def _load_font(paths: list[str], size: int) -> ImageFont.FreeTypeFont:
+    last_err: Optional[Exception] = None
     for path in paths:
         try:
             return ImageFont.truetype(path, size)
-        except (OSError, IOError):
+        except (OSError, IOError) as e:
+            last_err = e
             continue
-    log.warning("no TTF found in %s — using PIL default (will look chunky)", paths)
-    # PIL default doesn't honour size, but at least the render won't crash.
+    log.error(
+        "TTF load FAILED for size=%d. Tried paths=%s. Last error=%s. "
+        "Cards will render with the unscaled bitmap fallback (text will look tiny). "
+        "Make sure nixpacks.toml installs fonts-dejavu-core and fonts-liberation.",
+        size, paths, last_err,
+    )
     return ImageFont.load_default()
 
 
