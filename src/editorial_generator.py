@@ -24,6 +24,7 @@ Deferred to Bloque 6c:
   - Card image generation (card_image_url/path remain NULL for now).
 """
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -40,6 +41,11 @@ log = logging.getLogger("editorial-gen")
 MAX_PER_CYCLE = 2
 # Pause between candidates to spread out Groq calls.
 INTER_CANDIDATE_SLEEP_SEC = 5
+
+# Drop posts that Groq self-rates as filler. Saves DB clutter and prevents the
+# Telegram bot from ever picking them up. 1-5 scale; threshold of 3 keeps the
+# middle-of-the-road but kills "1 = filler" and "2 = barely worth it".
+MIN_ANGLE_STRENGTH_INSERT = 3
 
 # pulse_posts.headline is varchar — keep it sane.
 MAX_HEADLINE_LEN = 500
@@ -69,33 +75,77 @@ def _detect_asset(headline: Optional[str]) -> Optional[str]:
     return None
 
 
-def _semaforo_for(asset_id: Optional[str], snapshot: Optional[dict]) -> tuple[str, str]:
+# Sentiment word banks. Used as a tie-breaker when no asset match — gives us
+# more red/green polarity than the previous "everything is amarillo" macro fallback.
+# Mixed Spanish + English because RSS sources publish in either language.
+_POSITIVE_WORDS = re.compile(
+    r"\b("
+    r"soars?|surges?|jumps?|rallies|rally|gains?|record|highs?|booms?|breakthrough|approves?|approved|"
+    r"beats?|crushes?|outperforms?|wins?|profitable|profits?|bullish|moonshot|"
+    r"sube|salta|repunta|récord|maximo|máximo|alza|gana|aprueba|aprobad[oa]|supera|favorable|optimista"
+    r")\b",
+    re.IGNORECASE,
+)
+_NEGATIVE_WORDS = re.compile(
+    r"\b("
+    r"crashes?|plunges?|drops?|tumbles?|falls?|loses?|losses?|warning|alert|cuts?|slumps?|sinks?|"
+    r"misses?|disappoints?|bearish|panic|crisis|risk|downgrade|"
+    r"cae|desploma|hunde|pierde|pérdida|alerta|crisis|recorta|caída|baja|advierte|riesgo|miedo|temor"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _sentiment_semaforo(headline: Optional[str]) -> Optional[str]:
+    """Light-weight sentiment from headline keywords. Returns 'verde'/'rojo' or
+    None if mixed/neutral. Used as a tie-breaker for posts without an asset
+    match so we stop defaulting everything to amarillo."""
+    if not headline:
+        return None
+    pos = len(_POSITIVE_WORDS.findall(headline))
+    neg = len(_NEGATIVE_WORDS.findall(headline))
+    if pos and not neg:
+        return "verde"
+    if neg and not pos:
+        return "rojo"
+    if pos > neg:
+        return "verde"
+    if neg > pos:
+        return "rojo"
+    return None  # tied or no signal — let macro fallback decide
+
+
+def _semaforo_for(
+    asset_id: Optional[str],
+    snapshot: Optional[dict],
+    headline: Optional[str] = None,
+) -> tuple[str, str]:
     """
     Resolve a semáforo for the post. Returns (semaforo, source) so we can audit
     in compliance_flags.
 
     Priority:
-      1. snapshot-asset  — headline matched a tracked asset (BTC/ETH/SOL/SPY/Gold)
-                           → use that asset's live semaforo from the snapshot.
-      2. snapshot-macro  — no asset match but snapshot is available → derive
-                           from market-wide flags (stress / momentum / Fear&Greed).
-      3. default-neutral — snapshot unavailable.
+      1. snapshot-asset       — headline matched BTC/ETH/SOL/SPY/Gold → live snapshot.
+      2. headline-sentiment   — no asset match but the headline carries clear
+                                positive or negative wording → verde or rojo.
+      3. snapshot-macro       — derive from market-wide flags (stress / momentum / F&G).
+      4. default-neutral      — snapshot unavailable AND no sentiment signal.
     """
-    if not snapshot:
-        return "neutral", "default-neutral"
-
-    # 1. Asset-specific lookup wins if available.
-    if asset_id:
+    # 1. Asset-specific lookup wins.
+    if asset_id and snapshot:
         for s in snapshot.get("semaforos") or []:
             if s.get("id") == asset_id:
                 return (s.get("semaforo") or "neutral"), "snapshot-asset"
 
-    # 2. Macro fallback — most news is about individual stocks not in our 5-asset
-    # tracked list, so without this everything would default to neutral. Instead
-    # we tint the post with the current market mood:
-    #   rojo    = stress or extreme F&G  → cautionary
-    #   verde   = 4+ tracked assets bullish AND F&G not in deep fear (≥45)
-    #   amarillo = anything else (default "watch")
+    # 2. Headline sentiment tie-breaker — gives us polarity instead of defaulting amarillo.
+    sentiment = _sentiment_semaforo(headline)
+    if sentiment:
+        return sentiment, "headline-sentiment"
+
+    if not snapshot:
+        return "neutral", "default-neutral"
+
+    # 3. Macro fallback for truly neutral wording.
     flags  = snapshot.get("flags")  or {}
     market = snapshot.get("market") or {}
     fg     = market.get("fearGreed") or {}
@@ -161,7 +211,7 @@ def _compose_post(candidate: dict, angle: dict, snapshot: Optional[dict]) -> dic
     chosen_headline = (headlines[0] if headlines else candidate["headline"])[:MAX_HEADLINE_LEN]
 
     asset_id            = _detect_asset(candidate.get("headline"))
-    semaforo, sema_src  = _semaforo_for(asset_id, snapshot)
+    semaforo, sema_src  = _semaforo_for(asset_id, snapshot, candidate.get("headline"))
     asset_aff           = asset_id or candidate.get("asset_id")  # detected wins, else upstream
 
     return {
@@ -214,6 +264,17 @@ def _process_one(candidate: dict, snapshot: Optional[dict]) -> Optional[str]:
 
     if not angle.get("angle"):
         return "news-angle returned empty angle field"
+
+    # Quality gate: drop filler posts before they pollute pulse_posts and
+    # before we spend cycles generating cards / showing them in Telegram.
+    angle_strength = angle.get("strength") or 0
+    if angle_strength and angle_strength < MIN_ANGLE_STRENGTH_INSERT:
+        # Mark candidate as processed so we don't keep retrying it.
+        try:
+            _mark_candidate(candidate["id"], "processed")
+        except Exception:
+            pass
+        return f"angle_strength={angle_strength} below threshold {MIN_ANGLE_STRENGTH_INSERT} (filler, dropped)"
 
     try:
         post = _compose_post(candidate, angle, snapshot)

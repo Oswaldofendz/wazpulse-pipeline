@@ -15,6 +15,7 @@ Design:
 """
 import hashlib
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -33,6 +34,27 @@ MAX_ENTRY_AGE_HOURS = 12
 HTTP_TIMEOUT_SEC = 15
 # Be a polite citizen — identify ourselves.
 USER_AGENT = "WaCapital-PulseEngine/1.0 (+https://wastake.vercel.app)"
+
+# Parasitic headline patterns. SEC-required filings, repetitive analyst calls,
+# and other content that no human will click. Filtered BEFORE insertion so we
+# don't even pay the news-angle Groq cost.
+_PARASITIC_PATTERNS = [
+    # SEC filings: Form 13F, Form 144, Form 6K, Form 8-K, Form S-1, Form DEF14A, etc.
+    re.compile(r"\bForm\s+\d+[\-A-Z]?\b", re.IGNORECASE),
+    re.compile(r"\bForm\s+(13[FGD]|S[\-]?\d|N[\-]?[A-Z]+|10[\-]?[KQ])\b", re.IGNORECASE),
+    re.compile(r"\bSchedule\s+13[DG]\b", re.IGNORECASE),
+    # Insider transaction filings
+    re.compile(r"insider (sells|bought|sold|buys)\b.*shares\b", re.IGNORECASE),
+    re.compile(r"sells \$\d", re.IGNORECASE),
+    # Quarterly mass filings
+    re.compile(r"\bquarterly (filing|report) For:", re.IGNORECASE),
+]
+
+
+def _is_parasitic(headline: Optional[str]) -> bool:
+    if not headline or len(headline.strip()) < 8:
+        return True
+    return any(p.search(headline) for p in _PARASITIC_PATTERNS)
 
 
 def _make_dedup_key(source_name: str, entry: dict) -> str:
@@ -127,7 +149,7 @@ def _update_source_status(name: str, success: bool, error_msg: Optional[str] = N
 def _fetch_one_source(source: dict) -> dict:
     """
     Fetch one RSS source and insert any new candidates.
-    Returns: {fetched, new, skipped_old, skipped_dup}.
+    Returns: {fetched, new, skipped_old, skipped_dup, skipped_parasitic}.
     """
     name      = source["name"]
     url       = source["url"]
@@ -136,7 +158,7 @@ def _fetch_one_source(source: dict) -> dict:
     language  = source.get("language")
     event_type = _category_to_event_type(category)
 
-    stats = {"fetched": 0, "new": 0, "skipped_old": 0, "skipped_dup": 0}
+    stats = {"fetched": 0, "new": 0, "skipped_old": 0, "skipped_dup": 0, "skipped_parasitic": 0}
 
     body = _fetch_feed_body(url)
     parsed = feedparser.parse(body)
@@ -145,7 +167,7 @@ def _fetch_one_source(source: dict) -> dict:
     if not entries:
         return stats
 
-    # Build candidate dicts in memory, skipping old/empty entries.
+    # Build candidate dicts in memory, skipping old/empty/parasitic entries.
     candidates_by_key: dict[str, dict] = {}
     for entry in entries:
         published = _entry_published_at(entry)
@@ -155,6 +177,10 @@ def _fetch_one_source(source: dict) -> dict:
         headline = (entry.get("title") or "").strip()[:500]
         link     = entry.get("link") or ""
         if not headline or not link:
+            continue
+        if _is_parasitic(headline):
+            stats.setdefault("skipped_parasitic", 0)
+            stats["skipped_parasitic"] += 1
             continue
         dedup_key = _make_dedup_key(name, entry)
         candidates_by_key[dedup_key] = {
@@ -196,27 +222,29 @@ def run_one_cycle() -> dict:
     """
     sources = _list_active_sources()
     totals = {
-        "sources":       len(sources),
-        "source_ok":     0,
-        "source_errors": 0,
-        "fetched":       0,
-        "new":           0,
-        "skipped_old":   0,
-        "skipped_dup":   0,
+        "sources":           len(sources),
+        "source_ok":         0,
+        "source_errors":     0,
+        "fetched":           0,
+        "new":               0,
+        "skipped_old":       0,
+        "skipped_dup":       0,
+        "skipped_parasitic": 0,
     }
 
     for src in sources:
         name = src["name"]
         try:
             s = _fetch_one_source(src)
-            totals["source_ok"]   += 1
-            totals["fetched"]     += s["fetched"]
-            totals["new"]         += s["new"]
-            totals["skipped_old"] += s["skipped_old"]
-            totals["skipped_dup"] += s["skipped_dup"]
+            totals["source_ok"]         += 1
+            totals["fetched"]           += s["fetched"]
+            totals["new"]               += s["new"]
+            totals["skipped_old"]       += s["skipped_old"]
+            totals["skipped_dup"]       += s["skipped_dup"]
+            totals["skipped_parasitic"] += s.get("skipped_parasitic", 0)
             log.info(
-                "  %-22s fetched=%2d new=%2d skip_old=%2d skip_dup=%2d",
-                name, s["fetched"], s["new"], s["skipped_old"], s["skipped_dup"],
+                "  %-22s fetched=%2d new=%2d skip_old=%2d skip_dup=%2d skip_paras=%2d",
+                name, s["fetched"], s["new"], s["skipped_old"], s["skipped_dup"], s.get("skipped_parasitic", 0),
             )
             _update_source_status(name, success=True)
         except Exception as e:
