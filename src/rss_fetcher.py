@@ -57,6 +57,10 @@ def _is_parasitic(headline: Optional[str]) -> bool:
     return any(p.search(headline) for p in _PARASITIC_PATTERNS)
 
 
+# Public alias so other modules (editorial_generator) can reuse the same logic.
+is_parasitic = _is_parasitic
+
+
 def _make_dedup_key(source_name: str, entry: dict) -> str:
     """Stable hash. Prefers entry GUID, falls back to link, then title."""
     raw = (

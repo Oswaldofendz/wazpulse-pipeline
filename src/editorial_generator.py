@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from . import wastake_client, card_generator
+from .rss_fetcher import is_parasitic
 from .supabase_client import get_client
 
 log = logging.getLogger("editorial-gen")
@@ -179,17 +180,51 @@ def _market_context(snapshot: Optional[dict]) -> dict:
 
 
 def _list_pending(limit: int) -> list[dict]:
+    """
+    Fetch a larger pool than `limit`, drop any parasitic ones (Form 144, etc.)
+    discovered along the way, and return up to `limit` clean candidates.
+
+    Parasitics found in the pool are also marked status='discarded' so they
+    never come back into the queue. This catches anything that slipped past
+    the RSS-time filter (older rows from before the filter existed, or
+    headlines that match a regex we hadn't covered yet).
+    """
     client = get_client()
+    pool_size = max(limit * 10, 30)  # generous: aim to find `limit` cleans
     res = (
         client.table("pulse_candidates")
         .select("id, headline, source, source_url, payload, event_type, asset_id, asset_type, priority")
         .eq("status", "pending")
         .order("priority", desc=True)
         .order("detected_at", desc=False)
-        .limit(limit)
+        .limit(pool_size)
         .execute()
     )
-    return res.data or []
+    rows = res.data or []
+    if not rows:
+        return []
+
+    clean: list[dict] = []
+    parasitic_ids: list = []
+    for row in rows:
+        if is_parasitic(row.get("headline")):
+            parasitic_ids.append(row["id"])
+            continue
+        clean.append(row)
+        if len(clean) >= limit:
+            break
+
+    if parasitic_ids:
+        log.info("  pre-pick: discarding %d parasitic candidates from queue", len(parasitic_ids))
+        try:
+            client.table("pulse_candidates").update({
+                "status":       "discarded",
+                "processed_at": datetime.now(timezone.utc).isoformat(),
+            }).in_("id", parasitic_ids).execute()
+        except Exception as e:
+            log.warning("  pre-pick: bulk discard failed: %s", e)
+
+    return clean
 
 
 def _mark_candidate(candidate_id: int, status: str) -> None:
