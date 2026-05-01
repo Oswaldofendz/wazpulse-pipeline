@@ -30,7 +30,7 @@ from typing import Optional
 
 from PIL import Image, ImageDraw, ImageFont
 
-from . import config
+from . import config, image_fetcher, entity_detector
 from .supabase_client import get_client
 
 log = logging.getLogger("card-generator")
@@ -162,8 +162,8 @@ def _domain_from_url(url: Optional[str]) -> str:
 
 # ─── Render ─────────────────────────────────────────────────────────────────
 
-def render(post: dict) -> bytes:
-    """Render a single card from a pulse_posts-shaped dict. Returns PNG bytes."""
+def _render_text_only(post: dict) -> bytes:
+    """Original layout (no entity match → text-only card)."""
     semaforo = (post.get("semaforo") or "neutral").lower()
     asset    = (post.get("asset_affected") or "GENERAL").upper()
     headline = (post.get("headline") or "").strip()
@@ -173,28 +173,21 @@ def render(post: dict) -> bytes:
     img  = Image.new("RGB", (CARD_W, CARD_H), BG_COLOR)
     draw = ImageDraw.Draw(img)
 
-    # 1. Top stripe in semáforo color
     bar_color = SEMAFORO_COLORS.get(semaforo, SEMAFORO_COLORS["neutral"])
     draw.rectangle([(0, 0), (CARD_W, HEADER_BAR_H)], fill=bar_color)
 
-    # 2. Asset (left) + WaCapital wordmark (right)
     f_asset = _font_bold(SIZE_ASSET)
     f_brand = _font_semi(SIZE_BRAND)
-
     draw.text((PADDING_X, ASSET_Y), asset, font=f_asset, fill=TEXT_PRIMARY)
-
     brand_text = "WaCapital"
     bbox = draw.textbbox((0, 0), brand_text, font=f_brand)
     brand_w = bbox[2] - bbox[0]
-    # baseline-align the brand mark with the asset label
     draw.text((CARD_W - PADDING_X - brand_w, ASSET_Y + (SIZE_ASSET - SIZE_BRAND) // 2 + 4),
               brand_text, font=f_brand, fill=TEXT_PRIMARY)
 
-    # Subtle separator below asset row
     sep_y = ASSET_Y + SIZE_ASSET + 30
     draw.line([(PADDING_X, sep_y), (CARD_W - PADDING_X, sep_y)], fill=SEPARATOR, width=2)
 
-    # 3. Headline — main visual weight
     f_headline = _font_bold(SIZE_HEADLINE)
     max_w      = CARD_W - 2 * PADDING_X
     headline_lines = _ellipsize_lines(_wrap_text(draw, headline, f_headline, max_w), 4)
@@ -203,7 +196,6 @@ def render(post: dict) -> bytes:
     for i, line in enumerate(headline_lines):
         draw.text((PADDING_X, headline_y + i * line_h), line, font=f_headline, fill=TEXT_PRIMARY)
 
-    # 4. Hook (secondary copy, smaller)
     f_hook    = _font_regular(SIZE_HOOK)
     hook_y    = headline_y + len(headline_lines) * line_h + 50
     hook_lines = _ellipsize_lines(_wrap_text(draw, hook_src, f_hook, max_w), 3)
@@ -211,7 +203,6 @@ def render(post: dict) -> bytes:
     for i, line in enumerate(hook_lines):
         draw.text((PADDING_X, hook_y + i * hook_lh), line, font=f_hook, fill=TEXT_SECONDARY)
 
-    # 5. Footer at bottom
     f_footer = _font_regular(SIZE_FOOTER)
     footer_y = CARD_H - 60
     footer_text = (f"{source} · " if source else "") + "WaCapital — Powered by WaStake"
@@ -220,6 +211,105 @@ def render(post: dict) -> bytes:
     out = BytesIO()
     img.save(out, format="PNG", optimize=True)
     return out.getvalue()
+
+
+def _render_with_image(post: dict, entity: dict, logo: Image.Image) -> bytes:
+    """
+    WatcherGuru-style layout: image dominates the upper half, headline below.
+    Used when the headline matched a known entity AND we successfully fetched
+    its logo/photo.
+
+    Layout (1080x1080):
+      0–90     top stripe in semáforo color
+      130–210  asset (entity display, e.g. "BTC" or "TESLA") + WaCapital wordmark
+      270–660  image area (390px tall × 600px wide max), centered, white-ish background
+      720–960  headline, up to 3 lines big bold
+      1010–    footer: source · WaCapital — Powered by WaStake
+    """
+    semaforo = (post.get("semaforo") or "neutral").lower()
+    asset    = entity["display"].upper()
+    headline = (post.get("headline") or "").strip()
+    source   = _domain_from_url(post.get("source_link"))
+
+    img  = Image.new("RGB", (CARD_W, CARD_H), BG_COLOR)
+    draw = ImageDraw.Draw(img)
+
+    # 1. Top stripe in semáforo color
+    bar_color = SEMAFORO_COLORS.get(semaforo, SEMAFORO_COLORS["neutral"])
+    draw.rectangle([(0, 0), (CARD_W, HEADER_BAR_H)], fill=bar_color)
+
+    # 2. Asset + WaCapital wordmark
+    f_asset = _font_bold(SIZE_ASSET)
+    f_brand = _font_semi(SIZE_BRAND)
+    draw.text((PADDING_X, ASSET_Y), asset, font=f_asset, fill=TEXT_PRIMARY)
+    brand_text = "WaCapital"
+    bbox = draw.textbbox((0, 0), brand_text, font=f_brand)
+    brand_w = bbox[2] - bbox[0]
+    draw.text((CARD_W - PADDING_X - brand_w, ASSET_Y + (SIZE_ASSET - SIZE_BRAND) // 2 + 4),
+              brand_text, font=f_brand, fill=TEXT_PRIMARY)
+
+    # 3. Image area — soft white panel so transparent logos read on dark BG
+    image_top    = 270
+    image_bottom = 660
+    image_h      = image_bottom - image_top  # 390
+    panel_padding = 30
+    panel_left  = PADDING_X
+    panel_right = CARD_W - PADDING_X
+    draw.rounded_rectangle(
+        [(panel_left, image_top), (panel_right, image_bottom)],
+        radius=24,
+        fill=(245, 247, 250),  # near-white panel
+    )
+
+    # Fit logo inside the panel with breathing room.
+    inner_w = (panel_right - panel_left) - 2 * panel_padding
+    inner_h = image_h - 2 * panel_padding
+    fitted  = image_fetcher.fit_into(logo, inner_w, inner_h)
+    iw, ih  = fitted.size
+    cx = (CARD_W - iw) // 2
+    cy = image_top + (image_h - ih) // 2
+    # Use the image's alpha as mask if it has one.
+    img.paste(fitted, (cx, cy), fitted if fitted.mode == "RGBA" else None)
+
+    # 4. Headline below image (max 3 lines, plenty of size)
+    f_headline = _font_bold(SIZE_HEADLINE)
+    max_w      = CARD_W - 2 * PADDING_X
+    headline_lines = _ellipsize_lines(_wrap_text(draw, headline, f_headline, max_w), 3)
+    headline_y = 720
+    line_h     = SIZE_HEADLINE + 14
+    for i, line in enumerate(headline_lines):
+        draw.text((PADDING_X, headline_y + i * line_h), line, font=f_headline, fill=TEXT_PRIMARY)
+
+    # 5. Footer
+    f_footer = _font_regular(SIZE_FOOTER)
+    footer_y = CARD_H - 60
+    footer_text = (f"{source} · " if source else "") + "WaCapital — Powered by WaStake"
+    draw.text((PADDING_X, footer_y), footer_text, font=f_footer, fill=TEXT_MUTED)
+
+    out = BytesIO()
+    img.save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
+def render(post: dict) -> bytes:
+    """
+    Public render entry point. If the headline matches a known entity AND the
+    logo fetches successfully, returns the WatcherGuru-style image card.
+    Otherwise falls back to the text-only layout.
+    """
+    headline = post.get("headline") or ""
+    entity   = entity_detector.detect_entity(headline)
+
+    if entity and entity.get("logo_url"):
+        logo = image_fetcher.fetch(entity["logo_url"])
+        if logo is not None:
+            try:
+                return _render_with_image(post, entity, logo)
+            except Exception as e:
+                log.warning("image-card render failed for entity=%s, falling back to text-only: %s",
+                            entity["id"], e)
+
+    return _render_text_only(post)
 
 
 # ─── Upload ─────────────────────────────────────────────────────────────────
