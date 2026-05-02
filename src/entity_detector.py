@@ -224,7 +224,7 @@ ENTITIES: list[dict] = [
         "logo_url": None,  # no clean logo for SP500; card uses default visual
     },
     {
-        "id": "gold",
+        "id": "gc=f",
         "type": "commodity",
         "display": "Oro",
         "patterns": [r"\bgold price\b", r"\bprecio del oro\b", r"\boro\b"],
@@ -253,4 +253,24 @@ def detect_entity(headline: Optional[str]) -> Optional[dict]:
                     "display":  e["display"],
                     "logo_url": e.get("logo_url"),
                 }
+    return None
+
+
+def find_by_id(entity_id: Optional[str]) -> Optional[dict]:
+    """
+    Look up an entity by its ID directly. The card generator uses this when
+    pulse_posts.asset_affected was already populated at editorial time — that
+    field comes from the ORIGINAL English RSS headline, which preserves the
+    entity name even when Groq later rewrites the headline in Spanish.
+    """
+    if not entity_id:
+        return None
+    for e in ENTITIES:
+        if e["id"] == entity_id:
+            return {
+                "id":       e["id"],
+                "type":     e["type"],
+                "display":  e["display"],
+                "logo_url": e.get("logo_url"),
+            }
     return None

@@ -215,16 +215,14 @@ def _render_text_only(post: dict) -> bytes:
 
 def _render_with_image(post: dict, entity: dict, logo: Image.Image) -> bytes:
     """
-    WatcherGuru-style layout: image dominates the upper half, headline below.
-    Used when the headline matched a known entity AND we successfully fetched
-    its logo/photo.
+    WatcherGuru-style layout v2.1: image dominates 45% of the card.
 
     Layout (1080x1080):
       0–90     top stripe in semáforo color
-      130–210  asset (entity display, e.g. "BTC" or "TESLA") + WaCapital wordmark
-      270–660  image area (390px tall × 600px wide max), centered, white-ish background
-      720–960  headline, up to 3 lines big bold
-      1010–    footer: source · WaCapital — Powered by WaStake
+      120–190  asset (e.g. "BTC", "TESLA") + WaCapital wordmark
+      220–710  image panel (490px tall) with rounded corners + colored bottom border
+      750–960  headline, large bold, up to 3 lines
+      1000–    footer: source · WaCapital — Powered by WaStake
     """
     semaforo = (post.get("semaforo") or "neutral").lower()
     asset    = entity["display"].upper()
@@ -234,48 +232,57 @@ def _render_with_image(post: dict, entity: dict, logo: Image.Image) -> bytes:
     img  = Image.new("RGB", (CARD_W, CARD_H), BG_COLOR)
     draw = ImageDraw.Draw(img)
 
-    # 1. Top stripe in semáforo color
     bar_color = SEMAFORO_COLORS.get(semaforo, SEMAFORO_COLORS["neutral"])
+
+    # 1. Top stripe in semáforo color
     draw.rectangle([(0, 0), (CARD_W, HEADER_BAR_H)], fill=bar_color)
 
-    # 2. Asset + WaCapital wordmark
+    # 2. Asset + WaCapital wordmark (compact header)
     f_asset = _font_bold(SIZE_ASSET)
     f_brand = _font_semi(SIZE_BRAND)
-    draw.text((PADDING_X, ASSET_Y), asset, font=f_asset, fill=TEXT_PRIMARY)
+    asset_y = 120
+    draw.text((PADDING_X, asset_y), asset, font=f_asset, fill=TEXT_PRIMARY)
     brand_text = "WaCapital"
     bbox = draw.textbbox((0, 0), brand_text, font=f_brand)
     brand_w = bbox[2] - bbox[0]
-    draw.text((CARD_W - PADDING_X - brand_w, ASSET_Y + (SIZE_ASSET - SIZE_BRAND) // 2 + 4),
+    draw.text((CARD_W - PADDING_X - brand_w, asset_y + (SIZE_ASSET - SIZE_BRAND) // 2 + 4),
               brand_text, font=f_brand, fill=TEXT_PRIMARY)
 
-    # 3. Image area — soft white panel so transparent logos read on dark BG
-    image_top    = 270
-    image_bottom = 660
-    image_h      = image_bottom - image_top  # 390
-    panel_padding = 30
-    panel_left  = PADDING_X
-    panel_right = CARD_W - PADDING_X
+    # 3. Image panel — bigger, with semáforo-colored bottom border accent
+    image_top      = 220
+    image_bottom   = 710
+    image_h        = image_bottom - image_top   # 490 px
+    panel_padding  = 40
+    panel_left     = PADDING_X
+    panel_right    = CARD_W - PADDING_X
+    border_h       = 6  # colored bottom accent
+
+    # Main panel (light off-white, less harsh than pure white)
     draw.rounded_rectangle(
-        [(panel_left, image_top), (panel_right, image_bottom)],
-        radius=24,
-        fill=(245, 247, 250),  # near-white panel
+        [(panel_left, image_top), (panel_right, image_bottom - border_h)],
+        radius=20,
+        fill=(241, 245, 249),  # slate-100
+    )
+    # Bottom colored border (semáforo accent)
+    draw.rectangle(
+        [(panel_left + 20, image_bottom - border_h), (panel_right - 20, image_bottom)],
+        fill=bar_color,
     )
 
-    # Fit logo inside the panel with breathing room.
+    # Fit logo inside the panel.
     inner_w = (panel_right - panel_left) - 2 * panel_padding
-    inner_h = image_h - 2 * panel_padding
+    inner_h = (image_h - border_h) - 2 * panel_padding
     fitted  = image_fetcher.fit_into(logo, inner_w, inner_h)
     iw, ih  = fitted.size
     cx = (CARD_W - iw) // 2
-    cy = image_top + (image_h - ih) // 2
-    # Use the image's alpha as mask if it has one.
+    cy = image_top + ((image_h - border_h) - ih) // 2
     img.paste(fitted, (cx, cy), fitted if fitted.mode == "RGBA" else None)
 
-    # 4. Headline below image (max 3 lines, plenty of size)
+    # 4. Headline below image — bigger, more dramatic
     f_headline = _font_bold(SIZE_HEADLINE)
     max_w      = CARD_W - 2 * PADDING_X
     headline_lines = _ellipsize_lines(_wrap_text(draw, headline, f_headline, max_w), 3)
-    headline_y = 720
+    headline_y = 750
     line_h     = SIZE_HEADLINE + 14
     for i, line in enumerate(headline_lines):
         draw.text((PADDING_X, headline_y + i * line_h), line, font=f_headline, fill=TEXT_PRIMARY)
@@ -293,14 +300,26 @@ def _render_with_image(post: dict, entity: dict, logo: Image.Image) -> bytes:
 
 def render(post: dict) -> bytes:
     """
-    Public render entry point. If the headline matches a known entity AND the
-    logo fetches successfully, returns the WatcherGuru-style image card.
-    Otherwise falls back to the text-only layout.
+    Public render entry point. Tries two paths to find an entity:
+
+    1. Lookup by `asset_affected` field — populated at editorial time from the
+       ORIGINAL English RSS headline. Groq later rewrites the headline in
+       Spanish and may drop the entity name, so this is the authoritative source.
+    2. Fallback: detect on the (translated) headline. Catches entities the
+       editorial step missed.
+
+    If we find an entity AND its logo fetches successfully, render with the
+    WatcherGuru-style image layout. Otherwise fall back to text-only.
     """
-    headline = post.get("headline") or ""
-    entity   = entity_detector.detect_entity(headline)
+    # Path 1: asset_affected lookup (covers most real cases)
+    entity = entity_detector.find_by_id(post.get("asset_affected"))
+
+    # Path 2: detect on the translated headline as a safety net
+    if entity is None:
+        entity = entity_detector.detect_entity(post.get("headline") or "")
 
     if entity and entity.get("logo_url"):
+        log.info("rendering with image: entity=%s logo=%s", entity["id"], entity["logo_url"])
         logo = image_fetcher.fetch(entity["logo_url"])
         if logo is not None:
             try:
@@ -308,6 +327,8 @@ def render(post: dict) -> bytes:
             except Exception as e:
                 log.warning("image-card render failed for entity=%s, falling back to text-only: %s",
                             entity["id"], e)
+        else:
+            log.warning("entity=%s matched but logo fetch returned None — falling back to text-only", entity["id"])
 
     return _render_text_only(post)
 

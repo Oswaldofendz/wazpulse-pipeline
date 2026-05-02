@@ -29,7 +29,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import wastake_client, card_generator
+from . import wastake_client, card_generator, entity_detector
 from .rss_fetcher import is_parasitic
 from .supabase_client import get_client
 
@@ -245,9 +245,15 @@ def _compose_post(candidate: dict, angle: dict, snapshot: Optional[dict]) -> dic
     ig_caption      = (angle.get("instagram_caption") or "").strip() or copy_twitter
     chosen_headline = (headlines[0] if headlines else candidate["headline"])[:MAX_HEADLINE_LEN]
 
-    asset_id            = _detect_asset(candidate.get("headline"))
-    semaforo, sema_src  = _semaforo_for(asset_id, snapshot, candidate.get("headline"))
-    asset_aff           = asset_id or candidate.get("asset_id")  # detected wins, else upstream
+    # Two-tier asset detection:
+    # 1) Snapshot-tracked match (BTC/ETH/SOL/SPY/Gold) drives the live semáforo lookup.
+    # 2) Richer entity detection (~28 entities incl Tesla/Apple/etc.) drives the
+    #    visual: card_generator uses this to pick a logo. Entity-id wins for asset_affected
+    #    so backfill renders see e.g. "tesla" or "meta" instead of NULL.
+    snapshot_asset_id   = _detect_asset(candidate.get("headline"))
+    rich_entity         = entity_detector.detect_entity(candidate.get("headline"))
+    asset_aff           = (rich_entity["id"] if rich_entity else None) or snapshot_asset_id or candidate.get("asset_id")
+    semaforo, sema_src  = _semaforo_for(snapshot_asset_id, snapshot, candidate.get("headline"))
 
     return {
         "candidate_id":    candidate["id"],
@@ -269,8 +275,9 @@ def _compose_post(candidate: dict, angle: dict, snapshot: Optional[dict]) -> dic
             "angle_hook":       hook,
             "angle_cached":     angle.get("cached", False),
             "asset_match": {
-                "detected_asset":  asset_id,
-                "semaforo_source": sema_src,   # snapshot-asset | snapshot-macro | default-neutral
+                "detected_asset":  snapshot_asset_id,
+                "rich_entity":     (rich_entity["id"] if rich_entity else None),
+                "semaforo_source": sema_src,   # snapshot-asset | headline-sentiment | snapshot-macro | default-neutral
             },
             "market_context": _market_context(snapshot),
         },
