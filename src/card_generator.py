@@ -175,17 +175,41 @@ def _draw_top_stripe(img: Image.Image, semaforo: str) -> None:
     ImageDraw.Draw(img).rectangle([(0, 0), (CARD_W, TOP_STRIPE_H)], fill=color)
 
 
-def _draw_hero_solid(img: Image.Image, asset_label: str) -> None:
-    """T3 hero — dark slate background with a giant centered asset label."""
+def _draw_hero_solid(img: Image.Image, asset_label: str, semaforo: str) -> None:
+    """
+    T3 hero — minimal dark gradient background with a subtle WaCapital
+    watermark. No giant 'GENERAL' text. The text overlay below carries the
+    meaning; the hero is just visual breathing room with brand presence.
+    """
     draw = ImageDraw.Draw(img)
     draw.rectangle([(0, HERO_TOP), (CARD_W, HERO_BOTTOM)], fill=HERO_DARK)
-    label = (asset_label or "GENERAL").upper()
-    f = _font_bold(SIZE_ASSET)
-    bb = draw.textbbox((0, 0), label, font=f)
+
+    # Soft semáforo color glow in the center — subtle, feels intentional.
+    glow_color = SEMAFORO_COLORS.get(semaforo, SEMAFORO_COLORS["neutral"])
+    glow_radius = 280
+    glow_cx = CARD_W // 2
+    glow_cy = HERO_TOP + HERO_HEIGHT // 2
+    # Use an RGBA layer for alpha glow.
+    glow = Image.new("RGBA", (CARD_W, HERO_HEIGHT), (0, 0, 0, 0))
+    g_draw = ImageDraw.Draw(glow)
+    # Layered translucent circles for soft falloff.
+    for i, alpha in enumerate([18, 30, 45]):
+        r = glow_radius - i * 60
+        g_draw.ellipse(
+            [(glow_cx - r, (HERO_HEIGHT // 2) - r),
+             (glow_cx + r, (HERO_HEIGHT // 2) + r)],
+            fill=(*glow_color, alpha),
+        )
+    img.paste(glow, (0, HERO_TOP), glow)
+
+    # WaCapital wordmark center, large but understated.
+    f_brand = _font_semi(72)
+    text = "WaCapital"
+    bb = draw.textbbox((0, 0), text, font=f_brand)
     tw, th = bb[2] - bb[0], bb[3] - bb[1]
     cx = (CARD_W - tw) // 2
-    cy = HERO_TOP + (HERO_HEIGHT - th) // 2
-    draw.text((cx, cy), label, font=f, fill=TEXT_PRIMARY)
+    cy = HERO_TOP + (HERO_HEIGHT - th) // 2 - 20
+    draw.text((cx, cy), text, font=f_brand, fill=TEXT_SECONDARY)
 
 
 def _draw_hero_logo(img: Image.Image, logo: Image.Image) -> None:
@@ -331,7 +355,7 @@ def _render_tier3_text(post: dict) -> bytes:
 
     img = _new_canvas()
     _draw_top_stripe(img, semaforo)
-    _draw_hero_solid(img, asset)
+    _draw_hero_solid(img, asset, semaforo)
     _draw_overlay_text(img, headline, hook)
     _draw_brand_footer(img, source)
 
@@ -341,15 +365,6 @@ def _render_tier3_text(post: dict) -> bytes:
 
 
 # ─── Tier dispatch ──────────────────────────────────────────────────────────
-
-def _wants_tier1(post: dict, entity: Optional[dict]) -> bool:
-    """T1 only for highest-value posts with a clear visual subject."""
-    if entity is None:
-        return False
-    flags = post.get("compliance_flags") or {}
-    strength = flags.get("angle_strength") or 0
-    return strength >= 5
-
 
 def _resolve_entity(post: dict) -> Optional[dict]:
     # Prefer asset_affected (set at editorial time from original English headline).
@@ -362,23 +377,25 @@ def _resolve_entity(post: dict) -> Optional[dict]:
 
 def render(post: dict, *, skip_ai: bool = False) -> bytes:
     """
-    Public render entry point. Resolves entity, decides tier, and renders.
-    Always returns valid PNG bytes — degrades through tiers on failure.
+    Public render entry point. AI image is the DEFAULT for fresh posts —
+    we have generous Imagen 3 free-tier quota (~1500/day per key) and the
+    visual difference is huge. Logo/text are fallbacks only.
 
     skip_ai=True forces Tier-2 or Tier-3, skipping Imagen 3. Used by the
-    card backfill so re-rendering the historical backlog doesn't drain
-    daily AI image quota.
+    card backfill so re-rendering the historical 1500-post backlog doesn't
+    drain daily AI image quota — fresh posts only get the AI treatment.
     """
     entity = _resolve_entity(post)
 
-    # Tier 1: AI hero
-    if not skip_ai and _wants_tier1(post, entity):
+    # Tier 1: AI hero — DEFAULT for all fresh posts, regardless of strength.
+    # Quota maths: ~30-50 posts/day vs 3000/day available across 2 keys → 1-2%.
+    if not skip_ai:
         prompt = ai_image_generator.craft_prompt(
             headline=post.get("headline") or "",
             hook=(post.get("compliance_flags") or {}).get("angle_hook") or "",
             entity=entity,
         )
-        log.info("[tier1] strength==5 + entity=%s — generating AI image", entity["id"])
+        log.info("[tier1] generating AI image (entity=%s)", entity["id"] if entity else "-")
         ai_img = ai_image_generator.generate(prompt)
         if ai_img is not None:
             try:
@@ -386,7 +403,7 @@ def render(post: dict, *, skip_ai: bool = False) -> bytes:
             except Exception as e:
                 log.warning("[tier1] render failed, falling back to T2/T3: %s", e)
         else:
-            log.warning("[tier1] AI image generation returned None — falling back")
+            log.warning("[tier1] AI image generation returned None — falling back to T2/T3")
 
     # Tier 2: logo hero
     if entity and entity.get("logo_url"):
@@ -400,8 +417,8 @@ def render(post: dict, *, skip_ai: bool = False) -> bytes:
         else:
             log.warning("[tier2] entity=%s logo fetch returned None — falling back to T3", entity["id"])
 
-    # Tier 3: text-only hero
-    log.info("[tier3] text-only card")
+    # Tier 3: subtle dark hero (no big "GENERAL" text — keep it clean).
+    log.info("[tier3] subtle hero card")
     return _render_tier3_text(post)
 
 

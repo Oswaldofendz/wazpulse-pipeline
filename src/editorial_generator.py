@@ -43,10 +43,10 @@ MAX_PER_CYCLE = 2
 # Pause between candidates to spread out Groq calls.
 INTER_CANDIDATE_SLEEP_SEC = 5
 
-# Drop posts that Groq self-rates as filler. Saves DB clutter and prevents the
-# Telegram bot from ever picking them up. 1-5 scale; threshold of 3 keeps the
-# middle-of-the-road but kills "1 = filler" and "2 = barely worth it".
-MIN_ANGLE_STRENGTH_INSERT = 3
+# Drop posts that Groq self-rates as filler. After feedback that Groq is being
+# too generous (rating boring earnings beats as 4/5), raised threshold from 3
+# to 4. Combined with the stricter prompt update, only meaningful news survives.
+MIN_ANGLE_STRENGTH_INSERT = 4
 
 # pulse_posts.headline is varchar — keep it sane.
 MAX_HEADLINE_LEN = 500
