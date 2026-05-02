@@ -364,7 +364,7 @@ def backfill_cards() -> dict:
     client = get_client()
     res = (
         client.table("pulse_posts")
-        .select("id, candidate_id, headline, semaforo, asset_affected, copy_twitter, source_link")
+        .select("id, candidate_id, headline, semaforo, asset_affected, copy_twitter, source_link, compliance_flags")
         .is_("card_image_url", "null")
         .in_("status", ["generated", "pending_approval", "approved"])
         .order("created_at", desc=True)
@@ -380,7 +380,9 @@ def backfill_cards() -> dict:
     for post in posts:
         # Storage path uses candidate_id when available, else falls back to post id.
         cid = post.get("candidate_id") or post.get("id")
-        url, path = card_generator.render_and_upload(post, candidate_id=cid)
+        # Backfill skips Tier 1 (AI image) to protect daily Imagen 3 quota.
+        # The historical backlog is huge; AI generation is reserved for fresh posts.
+        url, path = card_generator.render_and_upload(post, candidate_id=cid, skip_ai=True)
         if not url:
             stats["errors"] += 1
             log.warning("  backfill render/upload failed post=%s", post["id"])

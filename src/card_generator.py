@@ -1,27 +1,27 @@
 """
-Card image generator — Bloque 6c MVP.
+Card image generator — Bloque 6c V2.2 (CryptoAlpha-style portrait).
 
-Renders a 1080x1080 PNG branded card per pulse_post using Pillow.
-Square ratio works across all Phase 1 platforms (Twitter, Instagram Feed,
-TikTok Photo). The carousel evolution (Bloque 6c-CAROUSEL) will produce
-multiple slides per post.
+Output: 1080×1350 PNG (portrait 4:5) — optimal for IG/TikTok feed and works
+fine for Twitter (renders as portrait card).
 
-Layout (top → bottom, y coordinates approximate):
-   0 –  90   Header bar in the post's semáforo color
- 130 – 210   Asset name (left) + 'WaCapital' wordmark (right)
- 270 – 700   Headline, large bold, wraps up to 4 lines
- 760 – 920   Hook / copy_twitter excerpt, secondary text, 3 lines
-1000 – 1040  Footer: 'source · WaCapital — Powered by WaStake'
+Three tiers, dispatched by `render()`:
+  • Tier 1 — AI hero (Imagen 3 / Pollinations Flux generated dramatic photo).
+            Triggered for posts with angle_strength == 5 AND a matched entity.
+  • Tier 2 — Logo hero (Clearbit company logo / cryptologos.cc crypto logo).
+            For posts with entity match but lower strength.
+  • Tier 3 — Solid color hero with big asset typography.
+            For posts without entity match — keeps the brand consistent.
 
-Storage:
-  Supabase Storage bucket 'card-images', uploaded to path
-  'posts/{candidate_id}.png' (one image per candidate). The public URL
-  is written back to pulse_posts.card_image_url.
+Common elements across all tiers:
+  – Top stripe (90 px) in semáforo color
+  – Hero area (760 px tall, varies by tier)
+  – Dark text overlay box (430 px tall, rounded) with:
+        headline in WHITE bold
+        hook in CYAN bold (the punchy CryptoAlpha-style accent)
+  – Brand "WaCapital" centered at the very bottom
 
-Failure handling:
-  Render failures are non-fatal — the post still gets inserted in
-  pulse_posts with card_image_url=NULL. The editorial generator logs
-  a warning so we can audit.
+Failure handling: every tier degrades to the next on error so a card always
+renders. card_image_url stays NULL only if all three tiers crash.
 """
 from io import BytesIO
 import logging
@@ -30,15 +30,15 @@ from typing import Optional
 
 from PIL import Image, ImageDraw, ImageFont
 
-from . import config, image_fetcher, entity_detector
+from . import config, image_fetcher, entity_detector, ai_image_generator
 from .supabase_client import get_client
 
 log = logging.getLogger("card-generator")
 
-# ─── Canvas ─────────────────────────────────────────────────────────────────
+# ─── Canvas (portrait 4:5) ──────────────────────────────────────────────────
 
 CARD_W = 1080
-CARD_H = 1080
+CARD_H = 1350
 
 # ─── Colors ─────────────────────────────────────────────────────────────────
 
@@ -49,36 +49,44 @@ SEMAFORO_COLORS = {
     "neutral":  (148, 163, 184),   # slate-400
 }
 
-BG_COLOR        = (15, 23, 42)     # slate-900
-TEXT_PRIMARY    = (248, 250, 252)  # slate-50
+BG_COLOR        = (15, 23, 42)     # slate-900 — base/fallback hero
+HERO_DARK       = (10, 18, 35)     # slightly bluer dark for hero panels
+OVERLAY_BG      = (10, 14, 24)     # dark text-box background (almost black)
+TEXT_PRIMARY    = (248, 250, 252)  # slate-50 — headline white
 TEXT_SECONDARY  = (203, 213, 225)  # slate-300
 TEXT_MUTED      = (148, 163, 184)  # slate-400
-SEPARATOR       = (51, 65, 85)     # slate-700
+ACCENT_CYAN     = (56, 189, 248)   # sky-400 — the CryptoAlpha-style hook color
 
 # ─── Layout ─────────────────────────────────────────────────────────────────
 
-HEADER_BAR_H  = 90
-PADDING_X     = 80
-HEAD_GAP      = 40
-ASSET_Y       = HEADER_BAR_H + HEAD_GAP
+TOP_STRIPE_H   = 90
+
+HERO_TOP       = TOP_STRIPE_H            # 90
+HERO_BOTTOM    = 850
+HERO_HEIGHT    = HERO_BOTTOM - HERO_TOP  # 760
+
+OVERLAY_TOP    = 850
+OVERLAY_BOTTOM = 1280
+OVERLAY_PAD_X  = 40
+OVERLAY_PAD_INNER = 50
+
+BRAND_Y        = 1300  # brand sits below the overlay box
 
 # Type sizes
-SIZE_ASSET    = 56
-SIZE_BRAND    = 32
-SIZE_HEADLINE = 60
-SIZE_HOOK     = 34
-SIZE_FOOTER   = 24
+SIZE_ASSET    = 88     # big asset name in T3 hero (when no logo)
+SIZE_HEADLINE = 60     # white text in overlay
+SIZE_HOOK     = 50     # cyan accent text
+SIZE_BRAND    = 28
+SIZE_FOOTER   = 22
+
 
 # ─── Font loading with multi-path fallback ──────────────────────────────────
 
-# Resolve repo-bundled fonts relative to this file. /app/src/card_generator.py
-# on Railway → /app/src/assets/fonts/...
 _HERE = os.path.dirname(os.path.abspath(__file__))
 FONT_BUNDLED_BOLD    = os.path.join(_HERE, "assets", "fonts", "Inter-Bold.ttf")
 FONT_BUNDLED_SEMI    = os.path.join(_HERE, "assets", "fonts", "Inter-SemiBold.ttf")
 FONT_BUNDLED_REGULAR = os.path.join(_HERE, "assets", "fonts", "Inter-Regular.ttf")
 
-# System fallback chain in case the bundled fonts go missing.
 SYSTEM_BOLD = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
@@ -98,9 +106,7 @@ def _load_font(paths: list[str], size: int) -> ImageFont.FreeTypeFont:
             last_err = e
             continue
     log.error(
-        "TTF load FAILED for size=%d. Tried paths=%s. Last error=%s. "
-        "Cards will render with the unscaled bitmap fallback (text will look tiny). "
-        "Make sure nixpacks.toml installs fonts-dejavu-core and fonts-liberation.",
+        "TTF load FAILED for size=%d. Tried paths=%s. Last error=%s.",
         size, paths, last_err,
     )
     return ImageFont.load_default()
@@ -120,26 +126,25 @@ def _font_regular(size: int) -> ImageFont.FreeTypeFont:
 
 # ─── Text helpers ───────────────────────────────────────────────────────────
 
-def _wrap_text(draw: ImageDraw.ImageDraw, text: str, font, max_width: int) -> list[str]:
-    """Greedy word wrap to fit max_width pixels."""
+def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -> list[str]:
     words = (text or "").split()
     lines: list[str] = []
-    current: list[str] = []
-    for word in words:
-        candidate = " ".join(current + [word])
-        bbox = draw.textbbox((0, 0), candidate, font=font)
-        if (bbox[2] - bbox[0]) <= max_width:
-            current.append(word)
+    cur: list[str] = []
+    for w in words:
+        cand = " ".join(cur + [w])
+        bb = draw.textbbox((0, 0), cand, font=font)
+        if (bb[2] - bb[0]) <= max_w:
+            cur.append(w)
         else:
-            if current:
-                lines.append(" ".join(current))
-            current = [word]
-    if current:
-        lines.append(" ".join(current))
+            if cur:
+                lines.append(" ".join(cur))
+            cur = [w]
+    if cur:
+        lines.append(" ".join(cur))
     return lines
 
 
-def _ellipsize_lines(lines: list[str], max_lines: int) -> list[str]:
+def _ellipsize(lines: list[str], max_lines: int) -> list[str]:
     if len(lines) <= max_lines:
         return lines
     keep = lines[:max_lines]
@@ -147,11 +152,10 @@ def _ellipsize_lines(lines: list[str], max_lines: int) -> list[str]:
     return keep
 
 
-def _domain_from_url(url: Optional[str]) -> str:
+def _domain(url: Optional[str]) -> str:
     if not url:
         return ""
     try:
-        # naive parse, no urllib because the value should already be sane
         host = url.split("//", 1)[-1].split("/", 1)[0]
         if host.startswith("www."):
             host = host[4:]
@@ -160,177 +164,245 @@ def _domain_from_url(url: Optional[str]) -> str:
         return ""
 
 
-# ─── Render ─────────────────────────────────────────────────────────────────
+# ─── Common card pieces ─────────────────────────────────────────────────────
 
-def _render_text_only(post: dict) -> bytes:
-    """Original layout (no entity match → text-only card)."""
-    semaforo = (post.get("semaforo") or "neutral").lower()
-    asset    = (post.get("asset_affected") or "GENERAL").upper()
-    headline = (post.get("headline") or "").strip()
-    hook_src = (post.get("copy_twitter") or "").strip()
-    source   = _domain_from_url(post.get("source_link"))
+def _new_canvas() -> Image.Image:
+    return Image.new("RGB", (CARD_W, CARD_H), BG_COLOR)
 
-    img  = Image.new("RGB", (CARD_W, CARD_H), BG_COLOR)
+
+def _draw_top_stripe(img: Image.Image, semaforo: str) -> None:
+    color = SEMAFORO_COLORS.get(semaforo, SEMAFORO_COLORS["neutral"])
+    ImageDraw.Draw(img).rectangle([(0, 0), (CARD_W, TOP_STRIPE_H)], fill=color)
+
+
+def _draw_hero_solid(img: Image.Image, asset_label: str) -> None:
+    """T3 hero — dark slate background with a giant centered asset label."""
     draw = ImageDraw.Draw(img)
-
-    bar_color = SEMAFORO_COLORS.get(semaforo, SEMAFORO_COLORS["neutral"])
-    draw.rectangle([(0, 0), (CARD_W, HEADER_BAR_H)], fill=bar_color)
-
-    f_asset = _font_bold(SIZE_ASSET)
-    f_brand = _font_semi(SIZE_BRAND)
-    draw.text((PADDING_X, ASSET_Y), asset, font=f_asset, fill=TEXT_PRIMARY)
-    brand_text = "WaCapital"
-    bbox = draw.textbbox((0, 0), brand_text, font=f_brand)
-    brand_w = bbox[2] - bbox[0]
-    draw.text((CARD_W - PADDING_X - brand_w, ASSET_Y + (SIZE_ASSET - SIZE_BRAND) // 2 + 4),
-              brand_text, font=f_brand, fill=TEXT_PRIMARY)
-
-    sep_y = ASSET_Y + SIZE_ASSET + 30
-    draw.line([(PADDING_X, sep_y), (CARD_W - PADDING_X, sep_y)], fill=SEPARATOR, width=2)
-
-    f_headline = _font_bold(SIZE_HEADLINE)
-    max_w      = CARD_W - 2 * PADDING_X
-    headline_lines = _ellipsize_lines(_wrap_text(draw, headline, f_headline, max_w), 4)
-    headline_y = sep_y + 50
-    line_h     = SIZE_HEADLINE + 14
-    for i, line in enumerate(headline_lines):
-        draw.text((PADDING_X, headline_y + i * line_h), line, font=f_headline, fill=TEXT_PRIMARY)
-
-    f_hook    = _font_regular(SIZE_HOOK)
-    hook_y    = headline_y + len(headline_lines) * line_h + 50
-    hook_lines = _ellipsize_lines(_wrap_text(draw, hook_src, f_hook, max_w), 3)
-    hook_lh    = SIZE_HOOK + 10
-    for i, line in enumerate(hook_lines):
-        draw.text((PADDING_X, hook_y + i * hook_lh), line, font=f_hook, fill=TEXT_SECONDARY)
-
-    f_footer = _font_regular(SIZE_FOOTER)
-    footer_y = CARD_H - 60
-    footer_text = (f"{source} · " if source else "") + "WaCapital — Powered by WaStake"
-    draw.text((PADDING_X, footer_y), footer_text, font=f_footer, fill=TEXT_MUTED)
-
-    out = BytesIO()
-    img.save(out, format="PNG", optimize=True)
-    return out.getvalue()
+    draw.rectangle([(0, HERO_TOP), (CARD_W, HERO_BOTTOM)], fill=HERO_DARK)
+    label = (asset_label or "GENERAL").upper()
+    f = _font_bold(SIZE_ASSET)
+    bb = draw.textbbox((0, 0), label, font=f)
+    tw, th = bb[2] - bb[0], bb[3] - bb[1]
+    cx = (CARD_W - tw) // 2
+    cy = HERO_TOP + (HERO_HEIGHT - th) // 2
+    draw.text((cx, cy), label, font=f, fill=TEXT_PRIMARY)
 
 
-def _render_with_image(post: dict, entity: dict, logo: Image.Image) -> bytes:
-    """
-    WatcherGuru-style layout v2.1: image dominates 45% of the card.
-
-    Layout (1080x1080):
-      0–90     top stripe in semáforo color
-      120–190  asset (e.g. "BTC", "TESLA") + WaCapital wordmark
-      220–710  image panel (490px tall) with rounded corners + colored bottom border
-      750–960  headline, large bold, up to 3 lines
-      1000–    footer: source · WaCapital — Powered by WaStake
-    """
-    semaforo = (post.get("semaforo") or "neutral").lower()
-    asset    = entity["display"].upper()
-    headline = (post.get("headline") or "").strip()
-    source   = _domain_from_url(post.get("source_link"))
-
-    img  = Image.new("RGB", (CARD_W, CARD_H), BG_COLOR)
+def _draw_hero_logo(img: Image.Image, logo: Image.Image) -> None:
+    """T2 hero — dark panel with logo centered. Slight white pad behind logo
+    so dark/transparent logos still read."""
     draw = ImageDraw.Draw(img)
+    draw.rectangle([(0, HERO_TOP), (CARD_W, HERO_BOTTOM)], fill=HERO_DARK)
 
-    bar_color = SEMAFORO_COLORS.get(semaforo, SEMAFORO_COLORS["neutral"])
-
-    # 1. Top stripe in semáforo color
-    draw.rectangle([(0, 0), (CARD_W, HEADER_BAR_H)], fill=bar_color)
-
-    # 2. Asset + WaCapital wordmark (compact header)
-    f_asset = _font_bold(SIZE_ASSET)
-    f_brand = _font_semi(SIZE_BRAND)
-    asset_y = 120
-    draw.text((PADDING_X, asset_y), asset, font=f_asset, fill=TEXT_PRIMARY)
-    brand_text = "WaCapital"
-    bbox = draw.textbbox((0, 0), brand_text, font=f_brand)
-    brand_w = bbox[2] - bbox[0]
-    draw.text((CARD_W - PADDING_X - brand_w, asset_y + (SIZE_ASSET - SIZE_BRAND) // 2 + 4),
-              brand_text, font=f_brand, fill=TEXT_PRIMARY)
-
-    # 3. Image panel — bigger, with semáforo-colored bottom border accent
-    image_top      = 220
-    image_bottom   = 710
-    image_h        = image_bottom - image_top   # 490 px
-    panel_padding  = 40
-    panel_left     = PADDING_X
-    panel_right    = CARD_W - PADDING_X
-    border_h       = 6  # colored bottom accent
-
-    # Main panel (light off-white, less harsh than pure white)
+    # Inner white-ish panel for the logo (helps Clearbit logos with white BG fit in)
+    panel_pad = 80
+    panel_top    = HERO_TOP + panel_pad
+    panel_bottom = HERO_BOTTOM - panel_pad
+    panel_left   = panel_pad
+    panel_right  = CARD_W - panel_pad
     draw.rounded_rectangle(
-        [(panel_left, image_top), (panel_right, image_bottom - border_h)],
-        radius=20,
+        [(panel_left, panel_top), (panel_right, panel_bottom)],
+        radius=24,
         fill=(241, 245, 249),  # slate-100
     )
-    # Bottom colored border (semáforo accent)
-    draw.rectangle(
-        [(panel_left + 20, image_bottom - border_h), (panel_right - 20, image_bottom)],
-        fill=bar_color,
-    )
-
-    # Fit logo inside the panel.
-    inner_w = (panel_right - panel_left) - 2 * panel_padding
-    inner_h = (image_h - border_h) - 2 * panel_padding
+    inner_w = (panel_right - panel_left) - 60
+    inner_h = (panel_bottom - panel_top) - 60
     fitted  = image_fetcher.fit_into(logo, inner_w, inner_h)
-    iw, ih  = fitted.size
+    iw, ih = fitted.size
     cx = (CARD_W - iw) // 2
-    cy = image_top + ((image_h - border_h) - ih) // 2
+    cy = panel_top + ((panel_bottom - panel_top) - ih) // 2
     img.paste(fitted, (cx, cy), fitted if fitted.mode == "RGBA" else None)
 
-    # 4. Headline below image — bigger, more dramatic
-    f_headline = _font_bold(SIZE_HEADLINE)
-    max_w      = CARD_W - 2 * PADDING_X
-    headline_lines = _ellipsize_lines(_wrap_text(draw, headline, f_headline, max_w), 3)
-    headline_y = 750
-    line_h     = SIZE_HEADLINE + 14
-    for i, line in enumerate(headline_lines):
-        draw.text((PADDING_X, headline_y + i * line_h), line, font=f_headline, fill=TEXT_PRIMARY)
 
-    # 5. Footer
-    f_footer = _font_regular(SIZE_FOOTER)
-    footer_y = CARD_H - 60
-    footer_text = (f"{source} · " if source else "") + "WaCapital — Powered by WaStake"
-    draw.text((PADDING_X, footer_y), footer_text, font=f_footer, fill=TEXT_MUTED)
+def _draw_hero_ai(img: Image.Image, ai: Image.Image) -> None:
+    """T1 hero — full-bleed AI image cropped/scaled to the hero area."""
+    target_w = CARD_W
+    target_h = HERO_HEIGHT
+    iw, ih = ai.size
+    # Scale to cover, then center-crop.
+    scale = max(target_w / iw, target_h / ih)
+    nw = max(1, int(iw * scale))
+    nh = max(1, int(ih * scale))
+    ai_resized = ai.resize((nw, nh), Image.LANCZOS)
+    cx_off = (nw - target_w) // 2
+    cy_off = (nh - target_h) // 2
+    cropped = ai_resized.crop((cx_off, cy_off, cx_off + target_w, cy_off + target_h))
+    img.paste(cropped, (0, HERO_TOP))
+
+
+def _draw_overlay_text(img: Image.Image, headline: str, hook: str) -> None:
+    """
+    Bottom text panel: dark rounded box with white headline + cyan hook.
+    """
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle(
+        [(OVERLAY_PAD_X, OVERLAY_TOP), (CARD_W - OVERLAY_PAD_X, OVERLAY_BOTTOM)],
+        radius=28,
+        fill=OVERLAY_BG,
+    )
+
+    inner_x_left  = OVERLAY_PAD_X + OVERLAY_PAD_INNER
+    inner_x_right = CARD_W - OVERLAY_PAD_X - OVERLAY_PAD_INNER
+    max_w = inner_x_right - inner_x_left
+
+    # Headline (white)
+    f_head = _font_bold(SIZE_HEADLINE)
+    head_lines = _ellipsize(_wrap(draw, headline, f_head, max_w), 3)
+    head_lh    = SIZE_HEADLINE + 10
+    head_y     = OVERLAY_TOP + 35
+    for i, line in enumerate(head_lines):
+        draw.text((inner_x_left, head_y + i * head_lh), line, font=f_head, fill=TEXT_PRIMARY)
+
+    # Hook (cyan accent), 2 lines max
+    if hook:
+        f_hook = _font_bold(SIZE_HOOK)
+        hook_lines = _ellipsize(_wrap(draw, hook, f_hook, max_w), 2)
+        hook_lh    = SIZE_HOOK + 8
+        hook_y     = head_y + len(head_lines) * head_lh + 20
+        # Don't overflow the box
+        max_hook_lines = max(0, (OVERLAY_BOTTOM - hook_y - 20) // hook_lh)
+        for i, line in enumerate(hook_lines[:max_hook_lines]):
+            draw.text((inner_x_left, hook_y + i * hook_lh), line, font=f_hook, fill=ACCENT_CYAN)
+
+
+def _draw_brand_footer(img: Image.Image, source: str) -> None:
+    draw = ImageDraw.Draw(img)
+    f_brand  = _font_semi(SIZE_BRAND)
+    brand_text = "WaCapital"
+    bb = draw.textbbox((0, 0), brand_text, font=f_brand)
+    tw = bb[2] - bb[0]
+    cx = (CARD_W - tw) // 2
+    draw.text((cx, BRAND_Y), brand_text, font=f_brand, fill=TEXT_SECONDARY)
+
+    # Tiny source line below
+    if source:
+        f_foot = _font_regular(SIZE_FOOTER)
+        bb2 = draw.textbbox((0, 0), source, font=f_foot)
+        tw2 = bb2[2] - bb2[0]
+        cx2 = (CARD_W - tw2) // 2
+        draw.text((cx2, BRAND_Y + SIZE_BRAND + 4), source, font=f_foot, fill=TEXT_MUTED)
+
+
+# ─── Tier renderers ─────────────────────────────────────────────────────────
+
+def _render_tier1_ai(post: dict, entity: dict, ai_image: Image.Image) -> bytes:
+    semaforo = (post.get("semaforo") or "neutral").lower()
+    headline = (post.get("headline")    or "").strip()
+    flags    = post.get("compliance_flags") or {}
+    hook     = (flags.get("angle_hook") or "").strip()
+    source   = _domain(post.get("source_link"))
+
+    img = _new_canvas()
+    _draw_top_stripe(img, semaforo)
+    _draw_hero_ai(img, ai_image)
+    _draw_overlay_text(img, headline, hook)
+    _draw_brand_footer(img, source)
 
     out = BytesIO()
     img.save(out, format="PNG", optimize=True)
     return out.getvalue()
 
 
-def render(post: dict) -> bytes:
-    """
-    Public render entry point. Tries two paths to find an entity:
+def _render_tier2_logo(post: dict, entity: dict, logo: Image.Image) -> bytes:
+    semaforo = (post.get("semaforo") or "neutral").lower()
+    headline = (post.get("headline")    or "").strip()
+    flags    = post.get("compliance_flags") or {}
+    hook     = (flags.get("angle_hook") or "").strip()
+    source   = _domain(post.get("source_link"))
 
-    1. Lookup by `asset_affected` field — populated at editorial time from the
-       ORIGINAL English RSS headline. Groq later rewrites the headline in
-       Spanish and may drop the entity name, so this is the authoritative source.
-    2. Fallback: detect on the (translated) headline. Catches entities the
-       editorial step missed.
+    img = _new_canvas()
+    _draw_top_stripe(img, semaforo)
+    _draw_hero_logo(img, logo)
+    _draw_overlay_text(img, headline, hook)
+    _draw_brand_footer(img, source)
 
-    If we find an entity AND its logo fetches successfully, render with the
-    WatcherGuru-style image layout. Otherwise fall back to text-only.
-    """
-    # Path 1: asset_affected lookup (covers most real cases)
-    entity = entity_detector.find_by_id(post.get("asset_affected"))
+    out = BytesIO()
+    img.save(out, format="PNG", optimize=True)
+    return out.getvalue()
 
-    # Path 2: detect on the translated headline as a safety net
+
+def _render_tier3_text(post: dict) -> bytes:
+    semaforo = (post.get("semaforo") or "neutral").lower()
+    headline = (post.get("headline")    or "").strip()
+    flags    = post.get("compliance_flags") or {}
+    hook     = (flags.get("angle_hook") or "").strip()
+    source   = _domain(post.get("source_link"))
+    asset    = (post.get("asset_affected") or "general").upper()
+
+    img = _new_canvas()
+    _draw_top_stripe(img, semaforo)
+    _draw_hero_solid(img, asset)
+    _draw_overlay_text(img, headline, hook)
+    _draw_brand_footer(img, source)
+
+    out = BytesIO()
+    img.save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
+# ─── Tier dispatch ──────────────────────────────────────────────────────────
+
+def _wants_tier1(post: dict, entity: Optional[dict]) -> bool:
+    """T1 only for highest-value posts with a clear visual subject."""
     if entity is None:
-        entity = entity_detector.detect_entity(post.get("headline") or "")
+        return False
+    flags = post.get("compliance_flags") or {}
+    strength = flags.get("angle_strength") or 0
+    return strength >= 5
 
+
+def _resolve_entity(post: dict) -> Optional[dict]:
+    # Prefer asset_affected (set at editorial time from original English headline).
+    e = entity_detector.find_by_id(post.get("asset_affected"))
+    if e is not None:
+        return e
+    # Fallback: detect on the (translated) headline.
+    return entity_detector.detect_entity(post.get("headline") or "")
+
+
+def render(post: dict, *, skip_ai: bool = False) -> bytes:
+    """
+    Public render entry point. Resolves entity, decides tier, and renders.
+    Always returns valid PNG bytes — degrades through tiers on failure.
+
+    skip_ai=True forces Tier-2 or Tier-3, skipping Imagen 3. Used by the
+    card backfill so re-rendering the historical backlog doesn't drain
+    daily AI image quota.
+    """
+    entity = _resolve_entity(post)
+
+    # Tier 1: AI hero
+    if not skip_ai and _wants_tier1(post, entity):
+        prompt = ai_image_generator.craft_prompt(
+            headline=post.get("headline") or "",
+            hook=(post.get("compliance_flags") or {}).get("angle_hook") or "",
+            entity=entity,
+        )
+        log.info("[tier1] strength==5 + entity=%s — generating AI image", entity["id"])
+        ai_img = ai_image_generator.generate(prompt)
+        if ai_img is not None:
+            try:
+                return _render_tier1_ai(post, entity, ai_img)
+            except Exception as e:
+                log.warning("[tier1] render failed, falling back to T2/T3: %s", e)
+        else:
+            log.warning("[tier1] AI image generation returned None — falling back")
+
+    # Tier 2: logo hero
     if entity and entity.get("logo_url"):
-        log.info("rendering with image: entity=%s logo=%s", entity["id"], entity["logo_url"])
         logo = image_fetcher.fetch(entity["logo_url"])
         if logo is not None:
             try:
-                return _render_with_image(post, entity, logo)
+                log.info("[tier2] entity=%s logo card", entity["id"])
+                return _render_tier2_logo(post, entity, logo)
             except Exception as e:
-                log.warning("image-card render failed for entity=%s, falling back to text-only: %s",
-                            entity["id"], e)
+                log.warning("[tier2] render failed, falling back to T3: %s", e)
         else:
-            log.warning("entity=%s matched but logo fetch returned None — falling back to text-only", entity["id"])
+            log.warning("[tier2] entity=%s logo fetch returned None — falling back to T3", entity["id"])
 
-    return _render_text_only(post)
+    # Tier 3: text-only hero
+    log.info("[tier3] text-only card")
+    return _render_tier3_text(post)
 
 
 # ─── Upload ─────────────────────────────────────────────────────────────────
@@ -339,37 +411,28 @@ CARD_BUCKET = "card-images"
 
 
 def upload(card_bytes: bytes, candidate_id) -> tuple[str, str]:
-    """
-    Upload PNG to Supabase Storage. Returns (public_url, storage_path).
-    Uses upsert via update-on-duplicate so reprocessed candidates overwrite.
-    """
+    """Upload PNG to Supabase Storage. Returns (public_url, storage_path)."""
     client = get_client()
     path   = f"posts/{candidate_id}.png"
     bucket = client.storage.from_(CARD_BUCKET)
-
     file_options = {
         "content-type": "image/png",
         "cache-control": "3600",
     }
-
     try:
         bucket.upload(path=path, file=card_bytes, file_options=file_options)
     except Exception as e:
-        # 409 / "duplicate" / "resource already exists" → overwrite via update.
         msg = str(e).lower()
         if "duplicate" in msg or "already exists" in msg or "409" in msg:
             bucket.update(path=path, file=card_bytes, file_options=file_options)
         else:
             raise
-
-    public_url = bucket.get_public_url(path)
-    return public_url, path
+    return bucket.get_public_url(path), path
 
 
-def render_and_upload(post: dict, candidate_id) -> tuple[Optional[str], Optional[str]]:
-    """One-shot helper used by editorial_generator. Returns (url, path) or (None, None) on failure."""
+def render_and_upload(post: dict, candidate_id, *, skip_ai: bool = False) -> tuple[Optional[str], Optional[str]]:
     try:
-        png = render(post)
+        png = render(post, skip_ai=skip_ai)
         return upload(png, candidate_id)
     except Exception as e:
         log.warning("card render/upload failed for candidate %s: %s", candidate_id, e)
