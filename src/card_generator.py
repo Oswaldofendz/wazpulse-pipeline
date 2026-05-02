@@ -428,19 +428,26 @@ CARD_BUCKET = "card-images"
 
 
 def upload(card_bytes: bytes, candidate_id) -> tuple[str, str]:
-    """Upload PNG to Supabase Storage. Returns (public_url, storage_path)."""
+    """Upload PNG to Supabase Storage. Returns (public_url, storage_path).
+
+    Uses upsert=true so an existing file is overwritten in a single POST
+    (no more duplicate-detection dance, no more 400s from re-renders).
+    """
     client = get_client()
     path   = f"posts/{candidate_id}.png"
     bucket = client.storage.from_(CARD_BUCKET)
     file_options = {
-        "content-type": "image/png",
+        "content-type":  "image/png",
         "cache-control": "3600",
+        "upsert":        "true",   # overwrite if already exists
     }
     try:
         bucket.upload(path=path, file=card_bytes, file_options=file_options)
     except Exception as e:
+        # Belt-and-suspenders: if upsert isn't honored for some reason,
+        # fall back to an explicit PUT update.
         msg = str(e).lower()
-        if "duplicate" in msg or "already exists" in msg or "409" in msg:
+        if any(k in msg for k in ("duplicate", "already exists", "409", "400", "exists")):
             bucket.update(path=path, file=card_bytes, file_options=file_options)
         else:
             raise
