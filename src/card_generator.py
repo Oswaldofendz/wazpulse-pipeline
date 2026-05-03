@@ -57,27 +57,28 @@ TEXT_SECONDARY  = (203, 213, 225)  # slate-300
 TEXT_MUTED      = (148, 163, 184)  # slate-400
 ACCENT_CYAN     = (56, 189, 248)   # sky-400 — the CryptoAlpha-style hook color
 
-# ─── Layout ─────────────────────────────────────────────────────────────────
+# ─── Layout (CryptoAlpha-style: full-bleed hero, compact text box, brand bottom) ────
 
-TOP_STRIPE_H   = 90
+# No top stripe — image is full bleed from y=0
+HERO_TOP       = 0
+HERO_BOTTOM    = 950
+HERO_HEIGHT    = HERO_BOTTOM - HERO_TOP   # 950 — dominant 70% of card
 
-HERO_TOP       = TOP_STRIPE_H            # 90
-HERO_BOTTOM    = 850
-HERO_HEIGHT    = HERO_BOTTOM - HERO_TOP  # 760
+OVERLAY_TOP    = 970
+OVERLAY_BOTTOM = 1265
+OVERLAY_PAD_X  = 30
+OVERLAY_PAD_INNER = 38
 
-OVERLAY_TOP    = 850
-OVERLAY_BOTTOM = 1280
-OVERLAY_PAD_X  = 40
-OVERLAY_PAD_INNER = 50
+BRAND_Y        = 1290  # small brand mark at very bottom
 
-BRAND_Y        = 1300  # brand sits below the overlay box
+# Semáforo accent — thin colored top border on the text box (replaces top stripe)
+SEMAFORO_BORDER_H = 5
 
 # Type sizes
-SIZE_ASSET    = 88     # big asset name in T3 hero (when no logo)
-SIZE_HEADLINE = 60     # white text in overlay
-SIZE_HOOK     = 50     # cyan accent text
-SIZE_BRAND    = 28
-SIZE_FOOTER   = 22
+SIZE_HEADLINE = 56     # white text in overlay
+SIZE_HOOK     = 46     # cyan accent text
+SIZE_BRAND    = 22     # small brand mark
+SIZE_FOOTER   = 18
 
 
 # ─── Font loading with multi-path fallback ──────────────────────────────────
@@ -170,67 +171,48 @@ def _new_canvas() -> Image.Image:
     return Image.new("RGB", (CARD_W, CARD_H), BG_COLOR)
 
 
-def _draw_top_stripe(img: Image.Image, semaforo: str) -> None:
-    color = SEMAFORO_COLORS.get(semaforo, SEMAFORO_COLORS["neutral"])
-    ImageDraw.Draw(img).rectangle([(0, 0), (CARD_W, TOP_STRIPE_H)], fill=color)
-
-
-def _draw_hero_solid(img: Image.Image, asset_label: str, semaforo: str) -> None:
+def _draw_hero_subtle(img: Image.Image, semaforo: str) -> None:
     """
-    T3 hero — minimal dark gradient background with a subtle WaCapital
-    watermark. No giant 'GENERAL' text. The text overlay below carries the
-    meaning; the hero is just visual breathing room with brand presence.
+    Last-resort hero (when both AI providers AND the logo fetch fail).
+    Subtle dark background with a soft semáforo glow — NO text, NO giant
+    WaCapital. The text overlay below carries all the meaning.
     """
     draw = ImageDraw.Draw(img)
     draw.rectangle([(0, HERO_TOP), (CARD_W, HERO_BOTTOM)], fill=HERO_DARK)
 
-    # Soft semáforo color glow in the center — subtle, feels intentional.
     glow_color = SEMAFORO_COLORS.get(semaforo, SEMAFORO_COLORS["neutral"])
-    glow_radius = 280
-    glow_cx = CARD_W // 2
-    glow_cy = HERO_TOP + HERO_HEIGHT // 2
-    # Use an RGBA layer for alpha glow.
     glow = Image.new("RGBA", (CARD_W, HERO_HEIGHT), (0, 0, 0, 0))
     g_draw = ImageDraw.Draw(glow)
-    # Layered translucent circles for soft falloff.
-    for i, alpha in enumerate([18, 30, 45]):
-        r = glow_radius - i * 60
+    cx_local = CARD_W // 2
+    cy_local = HERO_HEIGHT // 2
+    for i, alpha in enumerate([10, 18, 30, 45]):
+        r = 380 - i * 80
         g_draw.ellipse(
-            [(glow_cx - r, (HERO_HEIGHT // 2) - r),
-             (glow_cx + r, (HERO_HEIGHT // 2) + r)],
+            [(cx_local - r, cy_local - r), (cx_local + r, cy_local + r)],
             fill=(*glow_color, alpha),
         )
     img.paste(glow, (0, HERO_TOP), glow)
 
-    # WaCapital wordmark center, large but understated.
-    f_brand = _font_semi(72)
-    text = "WaCapital"
-    bb = draw.textbbox((0, 0), text, font=f_brand)
-    tw, th = bb[2] - bb[0], bb[3] - bb[1]
-    cx = (CARD_W - tw) // 2
-    cy = HERO_TOP + (HERO_HEIGHT - th) // 2 - 20
-    draw.text((cx, cy), text, font=f_brand, fill=TEXT_SECONDARY)
-
 
 def _draw_hero_logo(img: Image.Image, logo: Image.Image) -> None:
-    """T2 hero — dark panel with logo centered. Slight white pad behind logo
-    so dark/transparent logos still read."""
+    """T2 hero — dark panel with logo centered (used when AI fails AND
+    we have an entity match. With AI now the default+fallback, this
+    renders rarely — only when both Imagen 3 AND Pollinations fail)."""
     draw = ImageDraw.Draw(img)
     draw.rectangle([(0, HERO_TOP), (CARD_W, HERO_BOTTOM)], fill=HERO_DARK)
 
-    # Inner white-ish panel for the logo (helps Clearbit logos with white BG fit in)
-    panel_pad = 80
+    panel_pad = 100
     panel_top    = HERO_TOP + panel_pad
     panel_bottom = HERO_BOTTOM - panel_pad
     panel_left   = panel_pad
     panel_right  = CARD_W - panel_pad
     draw.rounded_rectangle(
         [(panel_left, panel_top), (panel_right, panel_bottom)],
-        radius=24,
-        fill=(241, 245, 249),  # slate-100
+        radius=28,
+        fill=(241, 245, 249),
     )
-    inner_w = (panel_right - panel_left) - 60
-    inner_h = (panel_bottom - panel_top) - 60
+    inner_w = (panel_right - panel_left) - 80
+    inner_h = (panel_bottom - panel_top) - 80
     fitted  = image_fetcher.fit_into(logo, inner_w, inner_h)
     iw, ih = fitted.size
     cx = (CARD_W - iw) // 2
@@ -254,15 +236,26 @@ def _draw_hero_ai(img: Image.Image, ai: Image.Image) -> None:
     img.paste(cropped, (0, HERO_TOP))
 
 
-def _draw_overlay_text(img: Image.Image, headline: str, hook: str) -> None:
+def _draw_overlay_text(img: Image.Image, headline: str, hook: str, semaforo: str) -> None:
     """
     Bottom text panel: dark rounded box with white headline + cyan hook.
+    Thin semáforo-colored top border replaces the old top stripe.
     """
     draw = ImageDraw.Draw(img)
+
+    # Main dark panel
     draw.rounded_rectangle(
         [(OVERLAY_PAD_X, OVERLAY_TOP), (CARD_W - OVERLAY_PAD_X, OVERLAY_BOTTOM)],
-        radius=28,
+        radius=24,
         fill=OVERLAY_BG,
+    )
+
+    # Thin colored top border = subtle semáforo accent (replaces removed top stripe)
+    bar_color = SEMAFORO_COLORS.get(semaforo, SEMAFORO_COLORS["neutral"])
+    draw.rectangle(
+        [(OVERLAY_PAD_X + 50, OVERLAY_TOP - 2),
+         (CARD_W - OVERLAY_PAD_X - 50, OVERLAY_TOP + SEMAFORO_BORDER_H)],
+        fill=bar_color,
     )
 
     inner_x_left  = OVERLAY_PAD_X + OVERLAY_PAD_INNER
@@ -273,43 +266,43 @@ def _draw_overlay_text(img: Image.Image, headline: str, hook: str) -> None:
     f_head = _font_bold(SIZE_HEADLINE)
     head_lines = _ellipsize(_wrap(draw, headline, f_head, max_w), 3)
     head_lh    = SIZE_HEADLINE + 10
-    head_y     = OVERLAY_TOP + 35
+    head_y     = OVERLAY_TOP + 30
     for i, line in enumerate(head_lines):
         draw.text((inner_x_left, head_y + i * head_lh), line, font=f_head, fill=TEXT_PRIMARY)
 
-    # Hook (cyan accent), 2 lines max
+    # Hook (cyan accent), 2 lines max, only if it fits
     if hook:
         f_hook = _font_bold(SIZE_HOOK)
         hook_lines = _ellipsize(_wrap(draw, hook, f_hook, max_w), 2)
         hook_lh    = SIZE_HOOK + 8
-        hook_y     = head_y + len(head_lines) * head_lh + 20
-        # Don't overflow the box
+        hook_y     = head_y + len(head_lines) * head_lh + 16
         max_hook_lines = max(0, (OVERLAY_BOTTOM - hook_y - 20) // hook_lh)
         for i, line in enumerate(hook_lines[:max_hook_lines]):
             draw.text((inner_x_left, hook_y + i * hook_lh), line, font=f_hook, fill=ACCENT_CYAN)
 
 
 def _draw_brand_footer(img: Image.Image, source: str) -> None:
+    """Small WaCapital wordmark centered at the very bottom — CryptoAlpha-style."""
     draw = ImageDraw.Draw(img)
-    f_brand  = _font_semi(SIZE_BRAND)
+    f_brand = _font_semi(SIZE_BRAND)
     brand_text = "WaCapital"
     bb = draw.textbbox((0, 0), brand_text, font=f_brand)
     tw = bb[2] - bb[0]
     cx = (CARD_W - tw) // 2
     draw.text((cx, BRAND_Y), brand_text, font=f_brand, fill=TEXT_SECONDARY)
-
-    # Tiny source line below
+    # Source domain microcopy below the brand
     if source:
         f_foot = _font_regular(SIZE_FOOTER)
         bb2 = draw.textbbox((0, 0), source, font=f_foot)
         tw2 = bb2[2] - bb2[0]
         cx2 = (CARD_W - tw2) // 2
-        draw.text((cx2, BRAND_Y + SIZE_BRAND + 4), source, font=f_foot, fill=TEXT_MUTED)
+        draw.text((cx2, BRAND_Y + SIZE_BRAND + 2), source, font=f_foot, fill=TEXT_MUTED)
 
 
 # ─── Tier renderers ─────────────────────────────────────────────────────────
 
-def _render_tier1_ai(post: dict, entity: dict, ai_image: Image.Image) -> bytes:
+def _render_with_hero(post: dict, hero_drawer) -> bytes:
+    """Common renderer — hero_drawer is a function that fills the hero zone."""
     semaforo = (post.get("semaforo") or "neutral").lower()
     headline = (post.get("headline")    or "").strip()
     flags    = post.get("compliance_flags") or {}
@@ -317,51 +310,26 @@ def _render_tier1_ai(post: dict, entity: dict, ai_image: Image.Image) -> bytes:
     source   = _domain(post.get("source_link"))
 
     img = _new_canvas()
-    _draw_top_stripe(img, semaforo)
-    _draw_hero_ai(img, ai_image)
-    _draw_overlay_text(img, headline, hook)
+    hero_drawer(img)
+    _draw_overlay_text(img, headline, hook, semaforo)
     _draw_brand_footer(img, source)
 
     out = BytesIO()
     img.save(out, format="PNG", optimize=True)
     return out.getvalue()
+
+
+def _render_tier1_ai(post: dict, entity: Optional[dict], ai_image: Image.Image) -> bytes:
+    return _render_with_hero(post, lambda im: _draw_hero_ai(im, ai_image))
 
 
 def _render_tier2_logo(post: dict, entity: dict, logo: Image.Image) -> bytes:
+    return _render_with_hero(post, lambda im: _draw_hero_logo(im, logo))
+
+
+def _render_tier3_subtle(post: dict) -> bytes:
     semaforo = (post.get("semaforo") or "neutral").lower()
-    headline = (post.get("headline")    or "").strip()
-    flags    = post.get("compliance_flags") or {}
-    hook     = (flags.get("angle_hook") or "").strip()
-    source   = _domain(post.get("source_link"))
-
-    img = _new_canvas()
-    _draw_top_stripe(img, semaforo)
-    _draw_hero_logo(img, logo)
-    _draw_overlay_text(img, headline, hook)
-    _draw_brand_footer(img, source)
-
-    out = BytesIO()
-    img.save(out, format="PNG", optimize=True)
-    return out.getvalue()
-
-
-def _render_tier3_text(post: dict) -> bytes:
-    semaforo = (post.get("semaforo") or "neutral").lower()
-    headline = (post.get("headline")    or "").strip()
-    flags    = post.get("compliance_flags") or {}
-    hook     = (flags.get("angle_hook") or "").strip()
-    source   = _domain(post.get("source_link"))
-    asset    = (post.get("asset_affected") or "general").upper()
-
-    img = _new_canvas()
-    _draw_top_stripe(img, semaforo)
-    _draw_hero_solid(img, asset, semaforo)
-    _draw_overlay_text(img, headline, hook)
-    _draw_brand_footer(img, source)
-
-    out = BytesIO()
-    img.save(out, format="PNG", optimize=True)
-    return out.getvalue()
+    return _render_with_hero(post, lambda im: _draw_hero_subtle(im, semaforo))
 
 
 # ─── Tier dispatch ──────────────────────────────────────────────────────────
@@ -375,37 +343,41 @@ def _resolve_entity(post: dict) -> Optional[dict]:
     return entity_detector.detect_entity(post.get("headline") or "")
 
 
-def render(post: dict, *, skip_ai: bool = False) -> bytes:
+def render(post: dict, *, ai_quality: str = "best") -> bytes:
     """
-    Public render entry point. AI image is the DEFAULT for fresh posts —
-    we have generous Imagen 3 free-tier quota (~1500/day per key) and the
-    visual difference is huge. Logo/text are fallbacks only.
+    Render entry point. AI image is the GOAL for every card — text-only
+    fallbacks only when both providers fail.
 
-    skip_ai=True forces Tier-2 or Tier-3, skipping Imagen 3. Used by the
-    card backfill so re-rendering the historical 1500-post backlog doesn't
-    drain daily AI image quota — fresh posts only get the AI treatment.
+    ai_quality:
+      "best"  — try Imagen 3 (multi-key) first, then Pollinations.
+                For fresh posts where we want top quality.
+      "cheap" — skip Imagen, use Pollinations only.
+                For backfill of 1500+ historical posts so we don't burn
+                Imagen 3 daily quota; Pollinations is free + unlimited.
+      "none"  — no AI at all (debugging only).
     """
     entity = _resolve_entity(post)
 
-    # Tier 1: AI hero — DEFAULT for all fresh posts, regardless of strength.
-    # Quota maths: ~30-50 posts/day vs 3000/day available across 2 keys → 1-2%.
-    if not skip_ai:
+    # Tier 1: AI hero (the default). Provider chosen by ai_quality.
+    if ai_quality != "none":
+        try_imagen = (ai_quality == "best")
         prompt = ai_image_generator.craft_prompt(
             headline=post.get("headline") or "",
             hook=(post.get("compliance_flags") or {}).get("angle_hook") or "",
             entity=entity,
         )
-        log.info("[tier1] generating AI image (entity=%s)", entity["id"] if entity else "-")
-        ai_img = ai_image_generator.generate(prompt)
+        log.info("[tier1] generating AI image (entity=%s, quality=%s)",
+                 entity["id"] if entity else "-", ai_quality)
+        ai_img = ai_image_generator.generate(prompt, try_imagen=try_imagen)
         if ai_img is not None:
             try:
                 return _render_tier1_ai(post, entity, ai_img)
             except Exception as e:
                 log.warning("[tier1] render failed, falling back to T2/T3: %s", e)
         else:
-            log.warning("[tier1] AI image generation returned None — falling back to T2/T3")
+            log.warning("[tier1] AI returned None — falling back to T2/T3")
 
-    # Tier 2: logo hero
+    # Tier 2: logo hero (only when both AI providers failed AND entity matched).
     if entity and entity.get("logo_url"):
         logo = image_fetcher.fetch(entity["logo_url"])
         if logo is not None:
@@ -417,9 +389,9 @@ def render(post: dict, *, skip_ai: bool = False) -> bytes:
         else:
             log.warning("[tier2] entity=%s logo fetch returned None — falling back to T3", entity["id"])
 
-    # Tier 3: subtle dark hero (no big "GENERAL" text — keep it clean).
-    log.info("[tier3] subtle hero card")
-    return _render_tier3_text(post)
+    # Tier 3: subtle hero (last resort — no big text, no WaCapital watermark).
+    log.info("[tier3] subtle hero card (fallback)")
+    return _render_tier3_subtle(post)
 
 
 # ─── Upload ─────────────────────────────────────────────────────────────────
@@ -454,9 +426,9 @@ def upload(card_bytes: bytes, candidate_id) -> tuple[str, str]:
     return bucket.get_public_url(path), path
 
 
-def render_and_upload(post: dict, candidate_id, *, skip_ai: bool = False) -> tuple[Optional[str], Optional[str]]:
+def render_and_upload(post: dict, candidate_id, *, ai_quality: str = "best") -> tuple[Optional[str], Optional[str]]:
     try:
-        png = render(post, skip_ai=skip_ai)
+        png = render(post, ai_quality=ai_quality)
         return upload(png, candidate_id)
     except Exception as e:
         log.warning("card render/upload failed for candidate %s: %s", candidate_id, e)

@@ -380,9 +380,10 @@ def backfill_cards() -> dict:
     for post in posts:
         # Storage path uses candidate_id when available, else falls back to post id.
         cid = post.get("candidate_id") or post.get("id")
-        # Backfill skips Tier 1 (AI image) to protect daily Imagen 3 quota.
-        # The historical backlog is huge; AI generation is reserved for fresh posts.
-        url, path = card_generator.render_and_upload(post, candidate_id=cid, skip_ai=True)
+        # Backfill uses Pollinations (free, no quota) instead of Imagen 3 to
+        # protect the daily Imagen 3 quota — that one is reserved for fresh posts.
+        # Pollinations gives us still-decent AI imagery for the 1500-post backlog.
+        url, path = card_generator.render_and_upload(post, candidate_id=cid, ai_quality="cheap")
         if not url:
             stats["errors"] += 1
             log.warning("  backfill render/upload failed post=%s", post["id"])

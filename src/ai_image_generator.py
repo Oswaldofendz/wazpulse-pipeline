@@ -128,13 +128,18 @@ def _pollinations(prompt: str) -> bytes:
 
 # ─── Public entry point ─────────────────────────────────────────────────────
 
-def generate(prompt: str) -> Optional[Image.Image]:
+def generate(prompt: str, *, try_imagen: bool = True) -> Optional[Image.Image]:
     """
     Generate a portrait image from `prompt`. Returns PIL.Image (RGB) or None
-    if both Gemini and Pollinations failed.
+    if every available provider failed.
 
-    Caches in /tmp/ keyed by sha256(prompt) — same prompt will return the
-    cached result without re-billing.
+    try_imagen:
+      True  → primary: Imagen 3 (multi-key rotation), fallback: Pollinations.
+              For premium/fresh posts where we want best quality.
+      False → skip Imagen entirely, use Pollinations only.
+              For backfill of historical posts — saves Imagen 3 daily quota.
+
+    Caches in /tmp/ keyed by sha256(prompt) — same prompt = no re-billing.
     """
     if not prompt or not prompt.strip():
         return None
@@ -150,37 +155,41 @@ def generate(prompt: str) -> Optional[Image.Image]:
             except Exception:
                 pass
 
-    # Try each Gemini key in order, skipping ones on cooldown.
-    for key in _gemini_keys():
-        if _key_on_cooldown(key):
-            log.info("[ai-image] skipping key %s (on cooldown)", _key_label(key))
-            continue
-        try:
-            png = _imagen3(prompt, key)
-            img = Image.open(BytesIO(png)).convert("RGB")
-            try:
-                img.save(path, format="PNG", optimize=True)
-            except Exception as e:
-                log.warning("[ai-image] cache write failed: %s", e)
-            log.info("[ai-image] OK via Imagen 3 (key %s)", _key_label(key))
-            return img
-        except requests.HTTPError as e:
-            status = e.response.status_code if e.response is not None else "?"
-            if status in (429, 403):
-                _mark_key_exhausted(key)
-                log.warning("[ai-image] Imagen 3 quota hit on key %s (status=%s) → next key",
-                            _key_label(key), status)
+    if try_imagen:
+        # Try each Gemini key in order, skipping ones on cooldown.
+        for key in _gemini_keys():
+            if _key_on_cooldown(key):
+                log.info("[ai-image] skipping key %s (on cooldown)", _key_label(key))
                 continue
-            log.warning("[ai-image] Imagen 3 failed on key %s: status=%s body=%s",
-                        _key_label(key), status, str(e.response.text)[:200] if e.response else "?")
-            continue
-        except Exception as e:
-            log.warning("[ai-image] Imagen 3 error on key %s: %s", _key_label(key), e)
-            continue
+            try:
+                png = _imagen3(prompt, key)
+                img = Image.open(BytesIO(png)).convert("RGB")
+                try:
+                    img.save(path, format="PNG", optimize=True)
+                except Exception as e:
+                    log.warning("[ai-image] cache write failed: %s", e)
+                log.info("[ai-image] OK via Imagen 3 (key %s)", _key_label(key))
+                return img
+            except requests.HTTPError as e:
+                status = e.response.status_code if e.response is not None else "?"
+                if status in (429, 403):
+                    _mark_key_exhausted(key)
+                    log.warning("[ai-image] Imagen 3 quota hit on key %s (status=%s) → next key",
+                                _key_label(key), status)
+                    continue
+                log.warning("[ai-image] Imagen 3 failed on key %s: status=%s body=%s",
+                            _key_label(key), status, str(e.response.text)[:200] if e.response else "?")
+                continue
+            except Exception as e:
+                log.warning("[ai-image] Imagen 3 error on key %s: %s", _key_label(key), e)
+                continue
 
-    # All Gemini keys exhausted or absent → Pollinations fallback.
+    # Pollinations fallback (or primary when try_imagen=False).
     try:
-        log.info("[ai-image] falling back to Pollinations (Flux)")
+        if try_imagen:
+            log.info("[ai-image] falling back to Pollinations (Flux)")
+        else:
+            log.info("[ai-image] using Pollinations (Flux) — Imagen skipped")
         png = _pollinations(prompt)
         img = Image.open(BytesIO(png)).convert("RGB")
         try:
