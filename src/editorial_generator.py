@@ -348,13 +348,13 @@ def _process_one(candidate: dict, snapshot: Optional[dict]) -> Optional[str]:
 
 # ─── Card backfill ──────────────────────────────────────────────────────────
 
-# How many cards to backfill per cycle. Bumped to 15 because we now use
-# Imagen 3 (Google) for backfill too — it's ~10x faster than Pollinations
-# (~5-8s/image vs 85s) and cleaner output (no gibberish "text" artifacts).
-# Quota: 2 Gemini keys × 1500/day = 3000 calls/day. 15/cycle × 12 cycles/h
-# × 24h = 4320/day theoretical max → real usage ~864/day = 28% of quota.
-# Backlog of 1500 posts drains in ~8 hours.
-CARD_BACKFILL_PER_CYCLE = 15
+# How many cards to backfill per cycle. Imagen 3 turned out NOT to be
+# accessible via free-tier AI Studio API keys (404), so we're back to
+# Pollinations which is slow. Switched to `turbo` model (~5-15s vs 85s
+# for flux). At ~10s/image × 5 cards = 50s of AI per cycle, leaves room
+# for RSS+editorial+Telegram inside the 5-min window.
+# Backlog catch-up: 5/cycle × 12/h ≈ 60/h ≈ 25h for 1500 posts.
+CARD_BACKFILL_PER_CYCLE = 5
 
 
 def backfill_cards() -> dict:

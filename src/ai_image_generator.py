@@ -116,11 +116,16 @@ def _imagen3(prompt: str, key: str) -> bytes:
 # ─── Provider: Pollinations.ai (Flux) ───────────────────────────────────────
 
 def _pollinations(prompt: str) -> bytes:
-    """Pollinations returns the PNG bytes directly via GET."""
+    """Pollinations returns the PNG bytes directly via GET.
+
+    Using `turbo` model: much faster than `flux` (~5-15s vs 85s) at the cost
+    of slightly less detailed output. For our use case (background imagery
+    behind a strong text overlay) the speed wins.
+    """
     safe = quote(prompt[:PROMPT_MAX])
     url = (
         f"https://image.pollinations.ai/prompt/{safe}"
-        "?width=1080&height=1350&model=flux&nologo=true"
+        "?width=1080&height=1350&model=turbo&nologo=true&enhance=true"
     )
     resp = requests.get(url, timeout=HTTP_TIMEOUT, headers={
         "User-Agent": "WaCapital-PulseEngine/1.0",
@@ -175,13 +180,28 @@ def generate(prompt: str, *, try_imagen: bool = True) -> Optional[Image.Image]:
                 return img
             except requests.HTTPError as e:
                 status = e.response.status_code if e.response is not None else "?"
+                # Pull a useful body snippet so we can diagnose 404s, scope errors, etc.
+                body_snippet = "?"
+                if e.response is not None:
+                    try:
+                        body_snippet = e.response.text[:300]
+                    except Exception:
+                        body_snippet = "<unreadable>"
                 if status in (429, 403):
                     _mark_key_exhausted(key)
-                    log.warning("[ai-image] Imagen 3 quota hit on key %s (status=%s) → next key",
-                                _key_label(key), status)
+                    log.warning("[ai-image] Imagen 3 quota/access on key %s (status=%s): %s",
+                                _key_label(key), status, body_snippet)
+                    continue
+                if status == 404:
+                    # 404 = model not found / not enabled for this key.
+                    # Mark the key cooldown so we don't hammer it; logged so user can debug.
+                    _mark_key_exhausted(key)
+                    log.warning("[ai-image] Imagen 3 NOT available for key %s (status=404). "
+                                "Key likely lacks Vertex AI / Imagen access. Body: %s",
+                                _key_label(key), body_snippet)
                     continue
                 log.warning("[ai-image] Imagen 3 failed on key %s: status=%s body=%s",
-                            _key_label(key), status, str(e.response.text)[:200] if e.response else "?")
+                            _key_label(key), status, body_snippet)
                 continue
             except Exception as e:
                 log.warning("[ai-image] Imagen 3 error on key %s: %s", _key_label(key), e)
