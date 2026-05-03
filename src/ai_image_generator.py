@@ -32,7 +32,10 @@ from PIL import Image
 log = logging.getLogger("ai-image")
 
 CACHE_DIR    = "/tmp/wacapital_ai_images"
-HTTP_TIMEOUT = 90    # AI gen can be slow
+# AI gen can be slow but we cap so a hung request doesn't block the cycle.
+# Pollinations Flux observed at ~85-90s typical; 120s gives headroom.
+# Imagen 3 is much faster (~3-8s), same timeout is fine.
+HTTP_TIMEOUT = 120
 PROMPT_MAX   = 480   # safety cap for prompt length
 
 # How long to skip a key after a 429. 1 hour is generous; daily quotas reset
@@ -208,10 +211,16 @@ def generate(prompt: str, *, try_imagen: bool = True) -> Optional[Image.Image]:
 # Cinematic style modifiers appended to every Tier-1 prompt. Tuned for
 # Imagen 3 / Flux — produces dramatic editorial photography aesthetic close to
 # CryptoAlpha / WatcherGuru visual language.
+#
+# Strong negative-text directives: diffusion models LOVE to scribble fake
+# letters/logos inside images (we saw "BLENA TIGOP"-style gibberish). The
+# repetition of "no text / no letters / no signs" is the only reliable way
+# to suppress it on Flux; Imagen 3 respects it more reliably.
 _STYLE_TAIL = (
-    "professional financial news editorial photography, dramatic cinematic lighting, "
-    "moody dark background, high contrast, photorealistic, hyper-detailed, "
-    "vertical composition, 8k, sharp focus, no text, no watermark"
+    "editorial photography, cinematic dramatic lighting, photorealistic, hyper-detailed, "
+    "8k, sharp focus, vertical 9:16 composition, "
+    "ABSOLUTELY no text, no letters, no readable writing, no captions, no labels, "
+    "no logos with text, no signs, no numbers, no watermark"
 )
 
 

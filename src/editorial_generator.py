@@ -348,9 +348,13 @@ def _process_one(candidate: dict, snapshot: Optional[dict]) -> Optional[str]:
 
 # ─── Card backfill ──────────────────────────────────────────────────────────
 
-# How many cards to backfill per cycle. With 5min cycles and ~1500 posts
-# missing cards, 10/cycle drains in ~12.5h. Goes up if we want faster.
-CARD_BACKFILL_PER_CYCLE = 10
+# How many cards to backfill per cycle. Bumped to 15 because we now use
+# Imagen 3 (Google) for backfill too — it's ~10x faster than Pollinations
+# (~5-8s/image vs 85s) and cleaner output (no gibberish "text" artifacts).
+# Quota: 2 Gemini keys × 1500/day = 3000 calls/day. 15/cycle × 12 cycles/h
+# × 24h = 4320/day theoretical max → real usage ~864/day = 28% of quota.
+# Backlog of 1500 posts drains in ~8 hours.
+CARD_BACKFILL_PER_CYCLE = 15
 
 
 def backfill_cards() -> dict:
@@ -380,10 +384,11 @@ def backfill_cards() -> dict:
     for post in posts:
         # Storage path uses candidate_id when available, else falls back to post id.
         cid = post.get("candidate_id") or post.get("id")
-        # Backfill uses Pollinations (free, no quota) instead of Imagen 3 to
-        # protect the daily Imagen 3 quota — that one is reserved for fresh posts.
-        # Pollinations gives us still-decent AI imagery for the 1500-post backlog.
-        url, path = card_generator.render_and_upload(post, candidate_id=cid, ai_quality="cheap")
+        # Backfill uses Imagen 3 (best quality, fast — ~5-8s/image) with
+        # Pollinations as fallback when keys are exhausted. Quota is plenty
+        # (3000/day across 2 keys); Pollinations was too slow + had garbled-text
+        # artifacts that looked unprofessional.
+        url, path = card_generator.render_and_upload(post, candidate_id=cid, ai_quality="best")
         if not url:
             stats["errors"] += 1
             log.warning("  backfill render/upload failed post=%s", post["id"])

@@ -57,28 +57,33 @@ TEXT_SECONDARY  = (203, 213, 225)  # slate-300
 TEXT_MUTED      = (148, 163, 184)  # slate-400
 ACCENT_CYAN     = (56, 189, 248)   # sky-400 — the CryptoAlpha-style hook color
 
-# ─── Layout (CryptoAlpha-style: full-bleed hero, compact text box, brand bottom) ────
+# ─── Layout (CryptoAlpha-style: full-bleed hero, generous text box, brand bottom) ────
 
 # No top stripe — image is full bleed from y=0
 HERO_TOP       = 0
-HERO_BOTTOM    = 950
-HERO_HEIGHT    = HERO_BOTTOM - HERO_TOP   # 950 — dominant 70% of card
+HERO_BOTTOM    = 870
+HERO_HEIGHT    = HERO_BOTTOM - HERO_TOP   # 870 — 64% of card, still dominant
 
-OVERLAY_TOP    = 970
-OVERLAY_BOTTOM = 1265
+# Overlay box made bigger so headline + hook never truncate.
+OVERLAY_TOP    = 890
+OVERLAY_BOTTOM = 1290
 OVERLAY_PAD_X  = 30
-OVERLAY_PAD_INNER = 38
+OVERLAY_PAD_INNER = 36
 
-BRAND_Y        = 1290  # small brand mark at very bottom
+BRAND_Y        = 1305  # small brand mark squeezed into the last 45px
 
 # Semáforo accent — thin colored top border on the text box (replaces top stripe)
 SEMAFORO_BORDER_H = 5
 
-# Type sizes
-SIZE_HEADLINE = 56     # white text in overlay
-SIZE_HOOK     = 46     # cyan accent text
-SIZE_BRAND    = 22     # small brand mark
-SIZE_FOOTER   = 18
+# Type sizes (tightened so 3-line headline + 3-line hook fit cleanly)
+SIZE_HEADLINE = 50     # white text in overlay
+SIZE_HOOK     = 40     # cyan accent text
+SIZE_BRAND    = 20     # small brand mark
+SIZE_FOOTER   = 16
+
+# Max wrapped lines per text block in the overlay
+MAX_HEADLINE_LINES = 3
+MAX_HOOK_LINES     = 3
 
 
 # ─── Font loading with multi-path fallback ──────────────────────────────────
@@ -262,22 +267,25 @@ def _draw_overlay_text(img: Image.Image, headline: str, hook: str, semaforo: str
     inner_x_right = CARD_W - OVERLAY_PAD_X - OVERLAY_PAD_INNER
     max_w = inner_x_right - inner_x_left
 
-    # Headline (white)
+    # Headline (white) — up to 3 lines, ellipsized only if extremely long.
     f_head = _font_bold(SIZE_HEADLINE)
-    head_lines = _ellipsize(_wrap(draw, headline, f_head, max_w), 3)
-    head_lh    = SIZE_HEADLINE + 10
-    head_y     = OVERLAY_TOP + 30
+    head_lines = _ellipsize(_wrap(draw, headline, f_head, max_w), MAX_HEADLINE_LINES)
+    head_lh    = SIZE_HEADLINE + 8
+    head_y     = OVERLAY_TOP + 25
     for i, line in enumerate(head_lines):
         draw.text((inner_x_left, head_y + i * head_lh), line, font=f_head, fill=TEXT_PRIMARY)
 
-    # Hook (cyan accent), 2 lines max, only if it fits
+    # Hook (cyan accent) — up to 3 lines now (was 2). Only ellipsized if it
+    # truly doesn't fit; we trust Groq to keep hooks short.
     if hook:
         f_hook = _font_bold(SIZE_HOOK)
-        hook_lines = _ellipsize(_wrap(draw, hook, f_hook, max_w), 2)
-        hook_lh    = SIZE_HOOK + 8
-        hook_y     = head_y + len(head_lines) * head_lh + 16
-        max_hook_lines = max(0, (OVERLAY_BOTTOM - hook_y - 20) // hook_lh)
-        for i, line in enumerate(hook_lines[:max_hook_lines]):
+        hook_lh = SIZE_HOOK + 6
+        hook_y  = head_y + len(head_lines) * head_lh + 14
+        # Hard physical limit: how many hook lines actually fit before the box bottom.
+        physical_max = max(1, (OVERLAY_BOTTOM - hook_y - 18) // hook_lh)
+        allowed      = min(MAX_HOOK_LINES, physical_max)
+        hook_lines = _ellipsize(_wrap(draw, hook, f_hook, max_w), allowed)
+        for i, line in enumerate(hook_lines):
             draw.text((inner_x_left, hook_y + i * hook_lh), line, font=f_hook, fill=ACCENT_CYAN)
 
 
