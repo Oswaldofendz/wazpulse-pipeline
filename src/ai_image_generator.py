@@ -118,14 +118,14 @@ def _imagen3(prompt: str, key: str) -> bytes:
 def _pollinations(prompt: str) -> bytes:
     """Pollinations returns the PNG bytes directly via GET.
 
-    Using `turbo` model: much faster than `flux` (~5-15s vs 85s) at the cost
-    of slightly less detailed output. For our use case (background imagery
-    behind a strong text overlay) the speed wins.
+    Using `turbo` model. Removed `enhance=true` because it added a slow
+    LLM-prompt-enhancement step (~10s extra). With enhance off and turbo,
+    requests should land closer to ~5-15s.
     """
     safe = quote(prompt[:PROMPT_MAX])
     url = (
         f"https://image.pollinations.ai/prompt/{safe}"
-        "?width=1080&height=1350&model=turbo&nologo=true&enhance=true"
+        "?width=1080&height=1350&model=turbo&nologo=true"
     )
     resp = requests.get(url, timeout=HTTP_TIMEOUT, headers={
         "User-Agent": "WaCapital-PulseEngine/1.0",
