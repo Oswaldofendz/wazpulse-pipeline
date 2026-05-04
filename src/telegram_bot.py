@@ -35,11 +35,12 @@ log = logging.getLogger("telegram-bot")
 
 # How many posts to push to Telegram per cycle. Higher = more inbox spam.
 MAX_SEND_PER_CYCLE = 3
-# Filter out filler posts. The news-angle endpoint rates 1-5; only true top
-# tier reaches the human reviewer to avoid Telegram fatigue. With the stricter
-# prompt + INSERT threshold of 4, posts in pulse_posts already filtered noise;
-# Telegram gets only the rare 5/5 ("guaranteed engagement") posts.
-MIN_ANGLE_STRENGTH = 5
+# Filter out filler posts. The news-angle endpoint rates 1-5.
+# Lowered from 5 → 4 temporarily so the user can validate visual flow with
+# more posts. With strength=4 in pulse_posts already filtered noise, this
+# brings ~30-50 posts/day into Telegram for review. Bump back to 5 later
+# if the inbox feels too noisy.
+MIN_ANGLE_STRENGTH = 4
 # Skip posts older than this — the 1400+ legacy backlog from Bloque 6a/b
 # would otherwise flood Telegram. Newer posts go to the human first.
 RECENT_HOURS = 24
