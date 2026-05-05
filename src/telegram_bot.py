@@ -36,11 +36,10 @@ log = logging.getLogger("telegram-bot")
 # How many posts to push to Telegram per cycle. Higher = more inbox spam.
 MAX_SEND_PER_CYCLE = 3
 # Filter out filler posts. The news-angle endpoint rates 1-5.
-# Lowered from 5 → 4 temporarily so the user can validate visual flow with
-# more posts. With strength=4 in pulse_posts already filtered noise, this
-# brings ~30-50 posts/day into Telegram for review. Bump back to 5 later
-# if the inbox feels too noisy.
-MIN_ANGLE_STRENGTH = 4
+# Lowered to 3 (from 4) to compensate for slow news cycles where every
+# candidate scores 3/5. Keeps Telegram inbox active. Reject weak posts
+# manually with ❌. Raise back to 4 when volume is sufficient.
+MIN_ANGLE_STRENGTH = 3
 # Skip posts older than this — the 1400+ legacy backlog from Bloque 6a/b
 # would otherwise flood Telegram. Newer posts go to the human first.
 RECENT_HOURS = 24
@@ -65,7 +64,11 @@ def _api_url(method: str) -> str:
     return f"{API_BASE}{config.TELEGRAM_BOT_TOKEN}/{method}"
 
 
-def _send_message(text: str, reply_markup: Optional[dict] = None) -> dict:
+def _send_message(
+    text: str,
+    reply_markup: Optional[dict] = None,
+    reply_to_message_id: Optional[int] = None,
+) -> dict:
     body = {
         "chat_id": int(config.TELEGRAM_CHAT_ID),
         "text": text,
@@ -74,6 +77,8 @@ def _send_message(text: str, reply_markup: Optional[dict] = None) -> dict:
     }
     if reply_markup:
         body["reply_markup"] = reply_markup
+    if reply_to_message_id:
+        body["reply_to_message_id"] = reply_to_message_id
     resp = requests.post(_api_url("sendMessage"), json=body, timeout=HTTP_TIMEOUT)
     resp.raise_for_status()
     return resp.json()
@@ -227,11 +232,34 @@ def _format_caption(post: dict) -> str:
 
 def _build_keyboard(post_id: int) -> dict:
     return {
-        "inline_keyboard": [[
-            {"text": "✅ Aprobar",  "callback_data": f"approve:{post_id}"},
-            {"text": "❌ Rechazar", "callback_data": f"reject:{post_id}"},
-            {"text": "⏭ Skip",      "callback_data": f"skip:{post_id}"},
-        ]]
+        "inline_keyboard": [
+            [
+                {"text": "✅ Aprobar",  "callback_data": f"approve:{post_id}"},
+                {"text": "❌ Rechazar", "callback_data": f"reject:{post_id}"},
+                {"text": "⏭ Skip",      "callback_data": f"skip:{post_id}"},
+            ],
+            [
+                {"text": "🎨 Prompts", "callback_data": f"prompts:{post_id}"},
+            ],
+        ]
+    }
+
+
+def _build_platform_keyboard(post_id: int) -> dict:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "🐦 Twitter",   "callback_data": f"pt_twitter:{post_id}"},
+                {"text": "🎵 TikTok",    "callback_data": f"pt_tiktok:{post_id}"},
+            ],
+            [
+                {"text": "📷 Instagram", "callback_data": f"pt_instagram:{post_id}"},
+                {"text": "▶️ YouTube",   "callback_data": f"pt_youtube:{post_id}"},
+            ],
+            [
+                {"text": "❌ Cancelar",  "callback_data": f"pt_cancel:{post_id}"},
+            ],
+        ]
     }
 
 
@@ -337,6 +365,170 @@ def _apply_action(action: str, post_id: int, headline_for_msg: str, chat_id: int
     return "❓ acción desconocida"
 
 
+# ─── Bloque 8a helpers: Prompts generator ───────────────────────────────────
+
+# Maps semaforo to an English visual-tone phrase for image gen prompts.
+_SEMAFORO_VISUAL = {
+    "verde":    "bullish momentum, positive sentiment, upward energy",
+    "amarillo": "cautious uncertainty, mixed signals, tension",
+    "rojo":     "crisis, bearish stress, high tension, dramatic urgency",
+    "neutral":  "calm observational, balanced, analytical",
+}
+
+_PLATFORM_NAMES = {
+    "twitter":   "Twitter",
+    "tiktok":    "TikTok",
+    "instagram": "Instagram",
+    "youtube":   "YouTube",
+}
+
+_STYLE_BASE = (
+    "photorealistic, cinematic dramatic lighting, editorial photography aesthetic, "
+    "high contrast, sharp focus. "
+    "ABSOLUTELY NO text, no letters, no signs, no numbers, no watermarks."
+)
+
+
+def _calc_tiktok_slides(post: dict) -> int:
+    """5 slides for strength<5, 7 slides for strength=5 (more content to cover)."""
+    strength = (post.get("compliance_flags") or {}).get("angle_strength", 4)
+    return 7 if strength >= 5 else 5
+
+
+def _build_tiktok_slide_prompts(headline: str, asset: str, tone: str, n: int) -> str:
+    if n == 5:
+        slide_descs = [
+            f"PORTADA: Dramatic hero close-up of {asset}, {tone}. Impact shot.",
+            f"CONTEXTO: Wide financial market environment scene. {headline[:80]}.",
+            f"IMPACTO: Abstract market data visualization, charts, {tone}.",
+            f"¿QUÉ SIGUE?: Forward-looking financial scene, opportunity vs risk.",
+            f"CTA: Professional investor analyzing screens, confident, inspiring light.",
+        ]
+    else:
+        slide_descs = [
+            f"PORTADA: Dramatic hero shot of {asset} symbol/concept, {tone}.",
+            f"CONTEXTO: Global financial environment, {headline[:60]}.",
+            f"¿QUÉ PASÓ?: Key event moment visualization, decisive scene.",
+            f"DATO CLAVE: Macro data abstract visualization, {tone}, numerical feel.",
+            f"IMPACTO: Market reaction, traders at screens, {tone}.",
+            f"¿QUÉ SIGUE?: Strategic outlook, forward-looking financial scene.",
+            f"CTA: Financial analyst, confident posture, inspiring lighting.",
+        ]
+    lines = []
+    for i, desc in enumerate(slide_descs, 1):
+        lines.append(f"<b>Slide {i}:</b> <code>{_escape_html(desc)} {_escape_html(_STYLE_BASE)} 9:16 portrait 1080x1920px.</code>")
+    return "\n".join(lines)
+
+
+def _generate_prompt(post: dict, platform: str) -> str:
+    """Generate a ready-to-paste image prompt for the given platform."""
+    headline = (post.get("headline") or "")[:200]
+    asset    = (post.get("asset_affected") or "financial markets").upper()
+    semaforo = post.get("semaforo") or "neutral"
+    tone     = _SEMAFORO_VISUAL.get(semaforo, "financial news context")
+
+    label = _PLATFORM_NAMES.get(platform, platform)
+
+    if platform in ("twitter", "instagram"):
+        dims = "1080x1350px portrait (4:5)"
+        body = (
+            f"Cinematic editorial photograph featuring {asset}. "
+            f"Subject context: {headline}. "
+            f"Visual mood: {tone}. "
+            f"{_STYLE_BASE} "
+            f"{dims}."
+        )
+        return (
+            f"🎨 <b>PROMPT — {label.upper()} (imagen única)</b>\n\n"
+            f"<i>Pegá en ChatGPT, Gemini, Midjourney o DALL-E:</i>\n\n"
+            f"<code>{_escape_html(body)}</code>"
+        )
+
+    if platform == "youtube":
+        body = (
+            f"YouTube news thumbnail: {asset} — {headline}. "
+            f"Visual mood: {tone}. "
+            f"Bold, eye-catching, high contrast, 16:9 landscape 1280x720px. "
+            f"{_STYLE_BASE}"
+        )
+        return (
+            f"🎨 <b>PROMPT — YOUTUBE THUMBNAIL</b>\n\n"
+            f"<i>Pegá en ChatGPT, Gemini, Midjourney o DALL-E:</i>\n\n"
+            f"<code>{_escape_html(body)}</code>"
+        )
+
+    if platform == "tiktok":
+        n      = _calc_tiktok_slides(post)
+        slides = _build_tiktok_slide_prompts(headline, asset, tone, n)
+        return (
+            f"🎨 <b>PROMPT — TIKTOK CAROUSEL ({n} slides)</b>\n\n"
+            f"📌 <i>Tema: {_escape_html(headline[:120])}</i>\n"
+            f"🎯 <i>Asset: {_escape_html(asset)} · Tono: {_escape_html(tone)}</i>\n\n"
+            f"<i>Generá cada slide por separado en ChatGPT/Gemini/Midjourney:</i>\n\n"
+            + slides
+        )
+
+    return f"⚠️ Plataforma '{platform}' no soportada aún."
+
+
+def _handle_prompts_callback(
+    action: str,
+    post_id: int,
+    cb_id: str,
+    chat_id: int,
+    message_id: int,
+    client,
+) -> str:
+    """Handle prompts: and pt_* callbacks. Returns log label."""
+    if action == "prompts":
+        keyboard = _build_platform_keyboard(post_id)
+        try:
+            _send_message(
+                f"🎨 <b>Prompts para post #{post_id}</b>\n¿Para qué plataforma?",
+                reply_markup=keyboard,
+            )
+            _answer_callback(cb_id, "Seleccioná la plataforma")
+        except Exception as e:
+            _answer_callback(cb_id, "Error al abrir selector")
+            log.warning("  prompts selector failed for post %d: %s", post_id, e)
+        return "prompts-open"
+
+    platform = action[3:]  # strip "pt_"
+
+    if platform == "cancel":
+        try:
+            _edit_message_text(chat_id, message_id, "❌ Prompts cancelado")
+        except Exception:
+            pass
+        _answer_callback(cb_id, "Cancelado")
+        return "prompts-cancel"
+
+    # Fetch full post data for prompt generation.
+    res = client.table("pulse_posts").select(
+        "headline, semaforo, asset_affected, compliance_flags, telegram_message_id"
+    ).eq("id", post_id).limit(1).execute()
+    rows = res.data or []
+    if not rows:
+        _answer_callback(cb_id, "Post no encontrado")
+        return "prompts-not-found"
+
+    post_data  = rows[0]
+    prompt_txt = _generate_prompt(post_data, platform)
+    orig_msg   = post_data.get("telegram_message_id")
+
+    try:
+        _send_message(prompt_txt, reply_to_message_id=orig_msg)
+        pname = _PLATFORM_NAMES.get(platform, platform)
+        _edit_message_text(chat_id, message_id, f"✅ Prompt enviado para {pname}")
+        _answer_callback(cb_id, f"Prompt {pname} listo")
+        log.info("  post %d → prompt sent for %s", post_id, platform)
+    except Exception as e:
+        _answer_callback(cb_id, "Error generando prompt")
+        log.warning("  prompt generation failed post %d platform %s: %s", post_id, platform, e)
+
+    return f"prompts-{platform}"
+
+
 def process_callbacks() -> dict:
     state  = _get_state(STATE_KEY_OFFSET) or {"offset": 0}
     offset = int(state.get("offset", 0) or 0)
@@ -383,6 +575,13 @@ def process_callbacks() -> dict:
             stats["ignored"] += 1
             continue
 
+        # ── Prompts callbacks (2-step platform selector) ──────────────────
+        if action == "prompts" or action.startswith("pt_"):
+            _handle_prompts_callback(action, post_id, cb_id, chat_id, message_id, client)
+            stats["ignored"] += 1  # not a moderation action, don't count
+            continue
+
+        # ── Moderation callbacks (approve / reject / skip) ────────────────
         # Fetch headline so the post-action message remains informative.
         res = client.table("pulse_posts").select("status, headline").eq("id", post_id).limit(1).execute()
         rows = res.data or []

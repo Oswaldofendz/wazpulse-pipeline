@@ -46,7 +46,7 @@ INTER_CANDIDATE_SLEEP_SEC = 5
 # Drop posts that Groq self-rates as filler. After feedback that Groq is being
 # too generous (rating boring earnings beats as 4/5), raised threshold from 3
 # to 4. Combined with the stricter prompt update, only meaningful news survives.
-MIN_ANGLE_STRENGTH_INSERT = 4
+MIN_ANGLE_STRENGTH_INSERT = 3
 
 # pulse_posts.headline is varchar — keep it sane.
 MAX_HEADLINE_LEN = 500
