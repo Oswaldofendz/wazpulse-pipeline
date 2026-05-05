@@ -8,6 +8,11 @@ Behaviour per BLOQUE_ACTUAL env var:
 The tick() loop catches all exceptions so a single bad cycle never crashes
 the container. Watch Deploy Logs for ERROR lines — Railway "Active" badge
 does NOT mean cycles are succeeding.
+
+Telegram callbacks (button presses) are processed every CALLBACK_POLL_SEC
+seconds during the inter-cycle sleep so the bot responds within ~10s of a
+button press — well inside Telegram's 30s answerCallbackQuery window. The
+full pipeline tick still runs every CYCLE_INTERVAL_SECONDS.
 """
 import logging
 import signal
@@ -25,6 +30,10 @@ logging.basicConfig(
 log = logging.getLogger("pulse-engine")
 
 _shutdown = False
+
+# How often to poll Telegram for button callbacks during the inter-cycle sleep.
+# Must be < 30s (Telegram's answerCallbackQuery timeout).
+CALLBACK_POLL_SEC = 10
 
 
 def _handle_sigterm(signum, _frame):
@@ -64,7 +73,6 @@ def _tick_bloque6(cycle_n: int) -> None:
         cycle_n, stats["pending_picked"], stats["generated"], stats["errors"],
     )
     # 3) Card backfill — generate images for posts that still don't have one.
-    #    LLM-independent: drains the historical backlog while news-angle is rate-limited.
     log.info("cycle %d card backfill", cycle_n)
     bf = editorial_generator.backfill_cards()
     log.info(
@@ -76,19 +84,19 @@ def _tick_bloque6(cycle_n: int) -> None:
 def _tick_bloque7(cycle_n: int) -> None:
     # 1+2: RSS + editorial (existing).
     _tick_bloque6(cycle_n)
-    # 3: Telegram approval bot (send pending + process callbacks).
-    log.info("cycle %d starting Telegram bot step", cycle_n)
-    stats = telegram_bot.run_one_cycle()
+    # 3: Telegram approval bot — send pending posts only.
+    #    Callbacks are processed separately every CALLBACK_POLL_SEC during sleep.
+    log.info("cycle %d starting Telegram send step", cycle_n)
+    stats = telegram_bot.send_pending()
     log.info(
-        "cycle %d Telegram done — sent=%d (eligible=%d) | callbacks: approved=%d rejected=%d skipped=%d",
+        "cycle %d Telegram send done — pool=%d eligible=%d sent=%d errors=%d",
         cycle_n,
-        stats["send"]["sent"], stats["send"]["eligible"],
-        stats["callbacks"]["approved"], stats["callbacks"]["rejected"], stats["callbacks"]["skipped"],
+        stats["pool"], stats["eligible"], stats["sent"], stats["send_errors"],
     )
 
 
 def _tick_bloque8(cycle_n: int) -> None:
-    # 1+2+3: RSS + editorial + Telegram (existing).
+    # 1+2+3: RSS + editorial + Telegram send (existing).
     _tick_bloque7(cycle_n)
     # 4: Twitter publisher — post approved cards.
     log.info("cycle %d starting Twitter publisher step", cycle_n)
@@ -98,6 +106,25 @@ def _tick_bloque8(cycle_n: int) -> None:
         cycle_n,
         tw["eligible"], tw["published"], tw["skipped_no_card"], tw["errors"],
     )
+
+
+def _poll_callbacks() -> None:
+    """Quick callback poll — runs every CALLBACK_POLL_SEC during inter-cycle sleep.
+
+    Only active from Bloque 7 onwards. Silently swallows all exceptions so a
+    Telegram hiccup never crashes the sleep loop.
+    """
+    if config.BLOQUE_ACTUAL < 7:
+        return
+    try:
+        stats = telegram_bot.process_callbacks()
+        if stats.get("approved") or stats.get("rejected") or stats.get("skipped"):
+            log.info(
+                "callback-poll: approved=%d rejected=%d skipped=%d",
+                stats["approved"], stats["rejected"], stats["skipped"],
+            )
+    except Exception as e:
+        log.debug("callback-poll error (non-fatal): %s", e)
 
 
 def tick(cycle_n: int) -> None:
@@ -131,10 +158,13 @@ def main() -> None:
     while not _shutdown:
         cycle_n += 1
         tick(cycle_n)
-        # Sleep in 1s slices so SIGTERM is respected quickly
-        for _ in range(config.CYCLE_INTERVAL_SECONDS):
+        # Sleep in 1s slices; poll Telegram callbacks every CALLBACK_POLL_SEC
+        # so button presses are handled within ~10s (< Telegram's 30s timeout).
+        for i in range(config.CYCLE_INTERVAL_SECONDS):
             if _shutdown:
                 break
+            if i > 0 and i % CALLBACK_POLL_SEC == 0:
+                _poll_callbacks()
             time.sleep(1)
 
     log.info("PulseEngine shut down cleanly after %d cycles", cycle_n)
