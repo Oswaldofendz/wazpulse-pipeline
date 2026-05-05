@@ -451,6 +451,62 @@ def _generate_prompt(post: dict, platform: str) -> str:
     return f"⚠️ Plataforma '{platform}' no soportada aún."
 
 
+def _generate_all_prompts(post: dict) -> str:
+    """Generate prompts for ALL platforms in one combined message.
+
+    Single-step flow: user clicks 🎨 Prompts → one cycle later → gets all
+    platform prompts at once. No secondary platform-selector step needed.
+    """
+    headline = (post.get("headline") or "")[:200]
+    asset    = (post.get("asset_affected") or "financial markets").upper()
+    semaforo = post.get("semaforo") or "neutral"
+    tone     = _SEMAFORO_VISUAL.get(semaforo, "financial news context")
+    post_id  = post.get("id", "?")
+
+    parts: list[str] = [
+        f"🎨 <b>PROMPTS — Post #{post_id}</b>",
+        f"📌 <i>{_escape_html(headline[:120])}</i>",
+        "",
+    ]
+
+    # Twitter / Instagram — same 4:5 portrait
+    tw_body = (
+        f"Cinematic editorial photograph featuring {asset}. "
+        f"Subject context: {headline[:160]}. "
+        f"Visual mood: {tone}. "
+        f"{_STYLE_BASE} "
+        f"1080x1350px portrait 4:5."
+    )
+    parts += [
+        "🐦 <b>TWITTER / 📷 INSTAGRAM</b>",
+        f"<code>{_escape_html(tw_body)}</code>",
+        "",
+    ]
+
+    # TikTok carousel
+    n      = _calc_tiktok_slides(post)
+    slides = _build_tiktok_slide_prompts(headline, asset, tone, n)
+    parts += [
+        f"🎵 <b>TIKTOK ({n} slides)</b>",
+        slides,
+        "",
+    ]
+
+    # YouTube thumbnail
+    yt_body = (
+        f"YouTube news thumbnail: {asset} — {headline[:120]}. "
+        f"Bold, eye-catching, high contrast, 16:9 landscape 1280x720px. "
+        f"Visual mood: {tone}. "
+        f"{_STYLE_BASE}"
+    )
+    parts += [
+        "▶️ <b>YOUTUBE THUMBNAIL</b>",
+        f"<code>{_escape_html(yt_body)}</code>",
+    ]
+
+    return "\n".join(parts)
+
+
 def _handle_prompts_callback(
     action: str,
     post_id: int,
@@ -459,33 +515,18 @@ def _handle_prompts_callback(
     message_id: int,
     client,
 ) -> str:
-    """Handle prompts: and pt_* callbacks. Returns log label."""
-    if action == "prompts":
-        keyboard = _build_platform_keyboard(post_id)
-        try:
-            _send_message(
-                f"🎨 <b>Prompts para post #{post_id}</b>\n¿Para qué plataforma?",
-                reply_markup=keyboard,
-            )
-            _answer_callback(cb_id, "Seleccioná la plataforma")
-        except Exception as e:
-            _answer_callback(cb_id, "Error al abrir selector")
-            log.warning("  prompts selector failed for post %d: %s", post_id, e)
-        return "prompts-open"
+    """Handle prompts: callback. Returns log label.
 
-    platform = action[3:]  # strip "pt_"
+    Single-step: fetch post, generate ALL platform prompts at once, send as
+    reply to the original post message. No secondary platform selector needed.
+    """
+    if action != "prompts":
+        # Stale pt_* callback from a previous session — just dismiss it.
+        _answer_callback(cb_id, "Usá el botón 🎨 Prompts para ver los prompts")
+        return "prompts-stale"
 
-    if platform == "cancel":
-        try:
-            _edit_message_text(chat_id, message_id, "❌ Prompts cancelado")
-        except Exception:
-            pass
-        _answer_callback(cb_id, "Cancelado")
-        return "prompts-cancel"
-
-    # Fetch full post data for prompt generation.
     res = client.table("pulse_posts").select(
-        "headline, semaforo, asset_affected, compliance_flags, telegram_message_id"
+        "id, headline, semaforo, asset_affected, compliance_flags, telegram_message_id"
     ).eq("id", post_id).limit(1).execute()
     rows = res.data or []
     if not rows:
@@ -493,20 +534,18 @@ def _handle_prompts_callback(
         return "prompts-not-found"
 
     post_data  = rows[0]
-    prompt_txt = _generate_prompt(post_data, platform)
     orig_msg   = post_data.get("telegram_message_id")
+    prompt_txt = _generate_all_prompts(post_data)
 
     try:
         _send_message(prompt_txt, reply_to_message_id=orig_msg)
-        pname = _PLATFORM_NAMES.get(platform, platform)
-        _edit_message_text(chat_id, message_id, f"✅ Prompt enviado para {pname}")
-        _answer_callback(cb_id, f"Prompt {pname} listo")
-        log.info("  post %d → prompt sent for %s", post_id, platform)
+        _answer_callback(cb_id, "✅ Prompts enviados")
+        log.info("  post %d → all-platform prompts sent", post_id)
+        return "prompts-all"
     except Exception as e:
-        _answer_callback(cb_id, "Error generando prompt")
-        log.warning("  prompt generation failed post %d platform %s: %s", post_id, platform, e)
-
-    return f"prompts-{platform}"
+        _answer_callback(cb_id, "Error generando prompts")
+        log.warning("  prompts failed for post %d: %s", post_id, e)
+        return "prompts-error"
 
 
 def process_callbacks() -> dict:

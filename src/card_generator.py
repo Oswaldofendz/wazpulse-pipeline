@@ -89,9 +89,8 @@ SIZE_FOOTER   = 16
 # Brand position: last ~55px of card
 BRAND_Y = 1293
 
-# Max wrapped lines per text block
-MAX_HEADLINE_LINES = 3
-MAX_HOOK_LINES     = 3
+# Min font size — below this text is too small to read
+MIN_FONT_SIZE = 28
 
 
 # ─── Font loading with multi-path fallback ──────────────────────────────────
@@ -273,63 +272,52 @@ def _compute_overlay_fonts(
     available_h: int,
 ) -> tuple:
     """
-    Scale headline + hook fonts UP from the base sizes so the text fills as
-    much of the overlay box as possible.  Returns:
-        (size_head, size_hook, head_lines, hook_lines, head_lh, hook_lh)
+    Find the largest font size where headline + hook fit WITHOUT truncation.
+    Returns: (size_head, size_hook, head_lines, hook_lines, head_lh, hook_lh)
 
-    Strategy: iterate from SIZE_HEADLINE upward (step 2px) until the combined
-    text height would exceed the box — then use the last valid size.
-    Ceiling: 1.7× the base sizes so ultra-short text doesn't look absurd.
+    Strategy: scan from MAX_HEAD down to MIN_FONT_SIZE in 2px steps.
+    For each candidate size, wrap text (no line limit) and check if total height
+    fits inside the available box. Return the first (largest) size that fits.
+    This guarantees full text is always shown — no "…" ever.
     """
-    MAX_HEAD = int(SIZE_HEADLINE * 1.7)   # ~85 px ceiling for headline
+    MAX_HEAD = int(SIZE_HEADLINE * 1.7)   # ~88 px ceiling (short headlines get big)
     TOP_PAD  = 25
     BOT_PAD  = 22
     GAP      = 16   # vertical gap between headline block and hook block
     inner_h  = available_h - TOP_PAD - BOT_PAD
 
-    best = None
+    for size_head in range(MAX_HEAD, MIN_FONT_SIZE - 1, -2):
+        size_hook = max(MIN_FONT_SIZE, int(size_head * SIZE_HOOK / SIZE_HEADLINE))
+        f_head    = _font_bold(size_head)
+        f_hook    = _font_bold(size_hook)
+        head_lh   = size_head + 8
+        hook_lh   = size_hook + 6
 
-    for size_head in range(SIZE_HEADLINE, MAX_HEAD + 1, 2):
-        # Hook scales proportionally with the headline size.
-        size_hook = min(int(SIZE_HOOK * 1.7), int(size_head * SIZE_HOOK / SIZE_HEADLINE))
-
-        f_head   = _font_bold(size_head)
-        f_hook   = _font_bold(size_hook)
-        head_lh  = size_head + 8
-        hook_lh  = size_hook + 6
-
-        head_lines = _ellipsize(_wrap(draw, headline, f_head, max_w), MAX_HEADLINE_LINES)
+        head_lines = _wrap(draw, headline, f_head, max_w)   # no line-cap
         head_h     = len(head_lines) * head_lh
 
         if hook:
-            remaining    = inner_h - head_h - GAP
-            physical_max = max(1, remaining // hook_lh)
-            hook_lines   = _ellipsize(
-                _wrap(draw, hook, f_hook, max_w),
-                min(MAX_HOOK_LINES, physical_max),
-            )
-            hook_h  = len(hook_lines) * hook_lh
-            total_h = head_h + GAP + hook_h
+            hook_lines = _wrap(draw, hook, f_hook, max_w)   # no line-cap
+            hook_h     = len(hook_lines) * hook_lh
+            total_h    = head_h + GAP + hook_h
         else:
             hook_lines = []
             total_h    = head_h
 
         if total_h <= inner_h:
-            best = (size_head, size_hook, head_lines, hook_lines, head_lh, hook_lh)
-        else:
-            break   # this size overflows — stop, use previous best
+            return (size_head, size_hook, head_lines, hook_lines, head_lh, hook_lh)
 
-    # Guaranteed fallback to base sizes (should never be None in practice).
-    if best is None:
-        f_head = _font_bold(SIZE_HEADLINE)
-        f_hook = _font_bold(SIZE_HOOK)
-        head_lh  = SIZE_HEADLINE + 8
-        hook_lh  = SIZE_HOOK + 6
-        head_lines = _ellipsize(_wrap(draw, headline, f_head, max_w), MAX_HEADLINE_LINES)
-        hook_lines = _ellipsize(_wrap(draw, hook, f_hook, max_w), MAX_HOOK_LINES) if hook else []
-        best = (SIZE_HEADLINE, SIZE_HOOK, head_lines, hook_lines, head_lh, hook_lh)
-
-    return best
+    # Even at MIN_FONT_SIZE it overflows — use it anyway (better to clip
+    # at the bottom than to truncate with "…").
+    size_head = MIN_FONT_SIZE
+    size_hook = MIN_FONT_SIZE
+    f_head    = _font_bold(size_head)
+    f_hook    = _font_bold(size_hook)
+    head_lh   = size_head + 8
+    hook_lh   = size_hook + 6
+    head_lines = _wrap(draw, headline, f_head, max_w)
+    hook_lines = _wrap(draw, hook, f_hook, max_w) if hook else []
+    return (size_head, size_hook, head_lines, hook_lines, head_lh, hook_lh)
 
 
 def _draw_overlay_text(img: Image.Image, headline: str, hook: str, semaforo: str) -> None:
