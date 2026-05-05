@@ -49,39 +49,47 @@ SEMAFORO_COLORS = {
     "neutral":  (148, 163, 184),   # slate-400
 }
 
-BG_COLOR        = (15, 23, 42)     # slate-900 — base/fallback hero
-HERO_DARK       = (10, 18, 35)     # slightly bluer dark for hero panels
-OVERLAY_BG      = (10, 14, 24)     # dark text-box background (almost black)
-TEXT_PRIMARY    = (248, 250, 252)  # slate-50 — headline white
+BG_COLOR        = (6, 8, 14)       # near-black — base/fallback hero
+HERO_DARK       = (8, 12, 22)      # slightly bluer dark for hero panels
+OVERLAY_BG      = (6, 8, 12)       # pure near-black for gradient endpoint
+TEXT_PRIMARY    = (255, 255, 255)  # pure white headline
 TEXT_SECONDARY  = (203, 213, 225)  # slate-300
 TEXT_MUTED      = (148, 163, 184)  # slate-400
 ACCENT_CYAN     = (56, 189, 248)   # sky-400 — the CryptoAlpha-style hook color
 
-# ─── Layout (CryptoAlpha-style: full-bleed hero, generous text box, brand bottom) ────
+# ─── Layout (CryptoAlpha V3: full-bleed hero + gradient fade, no separate box) ────
+#
+# Hero image fills the FULL card height (0 → CARD_H). A gradient overlay fades
+# from transparent at GRADIENT_START to solid near-black at GRADIENT_SOLID, then
+# stays solid to the bottom. Text sits on the solid zone. No rounded rectangle box.
+# This is the CryptoAlpha / WatcherGuru visual signature.
 
-# No top stripe — image is full bleed from y=0
 HERO_TOP       = 0
-HERO_BOTTOM    = 870
-HERO_HEIGHT    = HERO_BOTTOM - HERO_TOP   # 870 — 64% of card, still dominant
+HERO_BOTTOM    = CARD_H           # full-bleed: image fills entire card
+HERO_HEIGHT    = CARD_H
 
-# Overlay box made bigger so headline + hook never truncate.
-OVERLAY_TOP    = 890
-OVERLAY_BOTTOM = 1290
-OVERLAY_PAD_X  = 30
-OVERLAY_PAD_INNER = 36
+GRADIENT_START = 680              # gradient begins here (fully transparent)
+GRADIENT_SOLID = 900              # gradient is fully opaque from here down
 
-BRAND_Y        = 1295  # brand mark centered in the 60px strip below overlay box
+# Text area starts just below gradient_solid with padding
+TEXT_AREA_TOP  = 915
+TEXT_AREA_BOT  = 1285
+TEXT_PAD_X     = 40               # horizontal padding from card edge
 
-# Semáforo accent — thin colored top border on the text box (replaces top stripe)
-SEMAFORO_BORDER_H = 5
+# Semáforo accent — thin horizontal bar above the text block
+SEMAFORO_BAR_Y = TEXT_AREA_TOP - 10
+SEMAFORO_BAR_H = 4
 
-# Type sizes (tightened so 3-line headline + 3-line hook fit cleanly)
-SIZE_HEADLINE = 50     # white text in overlay
-SIZE_HOOK     = 40     # cyan accent text
-SIZE_BRAND    = 30     # WaCapital wordmark — prominent brand presence
+# Type sizes (base — auto-scale UP fills the text area for short text)
+SIZE_HEADLINE = 52
+SIZE_HOOK     = 42
+SIZE_BRAND    = 30     # WaCapital wordmark
 SIZE_FOOTER   = 16
 
-# Max wrapped lines per text block in the overlay
+# Brand position: last ~55px of card
+BRAND_Y = 1293
+
+# Max wrapped lines per text block
 MAX_HEADLINE_LINES = 3
 MAX_HOOK_LINES     = 3
 
@@ -179,36 +187,32 @@ def _new_canvas() -> Image.Image:
 def _draw_hero_subtle(img: Image.Image, semaforo: str) -> None:
     """
     Last-resort hero (when both AI providers AND the logo fetch fail).
-    Subtle dark background with a soft semáforo glow — NO text, NO giant
-    WaCapital. The text overlay below carries all the meaning.
+    Full-card dark background with a soft semáforo glow — gradient overlay
+    will be applied on top by _render_with_hero.
     """
     draw = ImageDraw.Draw(img)
-    draw.rectangle([(0, HERO_TOP), (CARD_W, HERO_BOTTOM)], fill=HERO_DARK)
+    draw.rectangle([(0, 0), (CARD_W, CARD_H)], fill=HERO_DARK)
 
     glow_color = SEMAFORO_COLORS.get(semaforo, SEMAFORO_COLORS["neutral"])
-    glow = Image.new("RGBA", (CARD_W, HERO_HEIGHT), (0, 0, 0, 0))
+    glow = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
     g_draw = ImageDraw.Draw(glow)
-    cx_local = CARD_W // 2
-    cy_local = HERO_HEIGHT // 2
+    cx = CARD_W // 2
+    cy = CARD_H // 3   # glow centered in upper 1/3 of card
     for i, alpha in enumerate([10, 18, 30, 45]):
-        r = 380 - i * 80
-        g_draw.ellipse(
-            [(cx_local - r, cy_local - r), (cx_local + r, cy_local + r)],
-            fill=(*glow_color, alpha),
-        )
-    img.paste(glow, (0, HERO_TOP), glow)
+        r = 420 - i * 90
+        g_draw.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=(*glow_color, alpha))
+    img.paste(glow, (0, 0), glow)
 
 
 def _draw_hero_logo(img: Image.Image, logo: Image.Image) -> None:
-    """T2 hero — dark panel with logo centered (used when AI fails AND
-    we have an entity match. With AI now the default+fallback, this
-    renders rarely — only when both Imagen 3 AND Pollinations fail)."""
+    """T2 hero — dark full-card background with logo centered in upper area.
+    Gradient overlay applied on top by _render_with_hero."""
     draw = ImageDraw.Draw(img)
-    draw.rectangle([(0, HERO_TOP), (CARD_W, HERO_BOTTOM)], fill=HERO_DARK)
+    draw.rectangle([(0, 0), (CARD_W, CARD_H)], fill=HERO_DARK)
 
     panel_pad = 100
-    panel_top    = HERO_TOP + panel_pad
-    panel_bottom = HERO_BOTTOM - panel_pad
+    panel_top    = 80
+    panel_bottom = GRADIENT_START - 40   # logo stays above gradient zone
     panel_left   = panel_pad
     panel_right  = CARD_W - panel_pad
     draw.rounded_rectangle(
@@ -225,20 +229,40 @@ def _draw_hero_logo(img: Image.Image, logo: Image.Image) -> None:
     img.paste(fitted, (cx, cy), fitted if fitted.mode == "RGBA" else None)
 
 
+def _draw_gradient_overlay(img: Image.Image) -> None:
+    """CryptoAlpha-style gradient: transparent at GRADIENT_START → solid at GRADIENT_SOLID.
+    Applied on top of the hero image so text sits on a clean dark surface."""
+    r, g, b = OVERLAY_BG
+    span = GRADIENT_SOLID - GRADIENT_START
+
+    # Build a full-card RGBA layer and alpha-composite it.
+    grad = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(grad)
+
+    # Gradient band: linear alpha from 0 → 255
+    for y in range(GRADIENT_START, GRADIENT_SOLID):
+        alpha = int(255 * (y - GRADIENT_START) / span)
+        draw.line([(0, y), (CARD_W, y)], fill=(r, g, b, alpha))
+
+    # Solid zone from GRADIENT_SOLID to bottom
+    draw.rectangle([(0, GRADIENT_SOLID), (CARD_W, CARD_H)], fill=(r, g, b, 255))
+
+    base = img.convert("RGBA")
+    merged = Image.alpha_composite(base, grad)
+    img.paste(merged.convert("RGB"))
+
+
 def _draw_hero_ai(img: Image.Image, ai: Image.Image) -> None:
-    """T1 hero — full-bleed AI image cropped/scaled to the hero area."""
-    target_w = CARD_W
-    target_h = HERO_HEIGHT
+    """T1 hero — full-bleed AI image cropped/scaled to fill the entire card."""
     iw, ih = ai.size
-    # Scale to cover, then center-crop.
-    scale = max(target_w / iw, target_h / ih)
+    scale = max(CARD_W / iw, CARD_H / ih)
     nw = max(1, int(iw * scale))
     nh = max(1, int(ih * scale))
     ai_resized = ai.resize((nw, nh), Image.LANCZOS)
-    cx_off = (nw - target_w) // 2
-    cy_off = (nh - target_h) // 2
-    cropped = ai_resized.crop((cx_off, cy_off, cx_off + target_w, cy_off + target_h))
-    img.paste(cropped, (0, HERO_TOP))
+    cx_off = (nw - CARD_W) // 2
+    cy_off = (nh - CARD_H) // 2
+    cropped = ai_resized.crop((cx_off, cy_off, cx_off + CARD_W, cy_off + CARD_H))
+    img.paste(cropped, (0, 0))
 
 
 def _compute_overlay_fonts(
@@ -310,32 +334,23 @@ def _compute_overlay_fonts(
 
 def _draw_overlay_text(img: Image.Image, headline: str, hook: str, semaforo: str) -> None:
     """
-    Bottom text panel: dark rounded box with white headline + cyan hook.
-    Font sizes auto-scale UP to fill the available box height — short text
-    gets larger type instead of leaving blank space at the bottom.
-    Thin semáforo-colored top border replaces the old top stripe.
+    CryptoAlpha V3 text overlay: no separate box — text sits directly on the
+    gradient that _draw_gradient_overlay() already painted. Font sizes auto-scale
+    UP to fill the available text area so there's no wasted empty space.
+    Thin semáforo-colored bar provides a subtle accent above the text block.
     """
     draw = ImageDraw.Draw(img)
 
-    # Main dark panel
-    draw.rounded_rectangle(
-        [(OVERLAY_PAD_X, OVERLAY_TOP), (CARD_W - OVERLAY_PAD_X, OVERLAY_BOTTOM)],
-        radius=24,
-        fill=OVERLAY_BG,
-    )
-
-    # Thin colored top border = subtle semáforo accent (replaces removed top stripe)
+    # Thin semáforo accent bar above text block
     bar_color = SEMAFORO_COLORS.get(semaforo, SEMAFORO_COLORS["neutral"])
     draw.rectangle(
-        [(OVERLAY_PAD_X + 50, OVERLAY_TOP - 2),
-         (CARD_W - OVERLAY_PAD_X - 50, OVERLAY_TOP + SEMAFORO_BORDER_H)],
+        [(TEXT_PAD_X, SEMAFORO_BAR_Y),
+         (CARD_W - TEXT_PAD_X, SEMAFORO_BAR_Y + SEMAFORO_BAR_H)],
         fill=bar_color,
     )
 
-    inner_x_left  = OVERLAY_PAD_X + OVERLAY_PAD_INNER
-    inner_x_right = CARD_W - OVERLAY_PAD_X - OVERLAY_PAD_INNER
-    max_w         = inner_x_right - inner_x_left
-    available_h   = OVERLAY_BOTTOM - OVERLAY_TOP
+    max_w       = CARD_W - TEXT_PAD_X * 2
+    available_h = TEXT_AREA_BOT - TEXT_AREA_TOP
 
     size_head, size_hook, head_lines, hook_lines, head_lh, hook_lh = \
         _compute_overlay_fonts(draw, headline, hook, max_w, available_h)
@@ -344,15 +359,15 @@ def _draw_overlay_text(img: Image.Image, headline: str, hook: str, semaforo: str
     f_hook = _font_bold(size_hook)
 
     # Headline (white)
-    head_y = OVERLAY_TOP + 25
+    head_y = TEXT_AREA_TOP
     for i, line in enumerate(head_lines):
-        draw.text((inner_x_left, head_y + i * head_lh), line, font=f_head, fill=TEXT_PRIMARY)
+        draw.text((TEXT_PAD_X, head_y + i * head_lh), line, font=f_head, fill=TEXT_PRIMARY)
 
     # Hook (cyan accent)
     if hook_lines:
         hook_y = head_y + len(head_lines) * head_lh + 16
         for i, line in enumerate(hook_lines):
-            draw.text((inner_x_left, hook_y + i * hook_lh), line, font=f_hook, fill=ACCENT_CYAN)
+            draw.text((TEXT_PAD_X, hook_y + i * hook_lh), line, font=f_hook, fill=ACCENT_CYAN)
 
 
 def _draw_brand_footer(img: Image.Image, source: str) -> None:
@@ -376,7 +391,7 @@ def _draw_brand_footer(img: Image.Image, source: str) -> None:
 # ─── Tier renderers ─────────────────────────────────────────────────────────
 
 def _render_with_hero(post: dict, hero_drawer) -> bytes:
-    """Common renderer — hero_drawer is a function that fills the hero zone."""
+    """Common renderer — hero_drawer fills the canvas, then gradient + text overlay."""
     semaforo = (post.get("semaforo") or "neutral").lower()
     headline = (post.get("headline")    or "").strip()
     flags    = post.get("compliance_flags") or {}
@@ -385,6 +400,7 @@ def _render_with_hero(post: dict, hero_drawer) -> bytes:
 
     img = _new_canvas()
     hero_drawer(img)
+    _draw_gradient_overlay(img)   # CryptoAlpha-style fade: transparent → solid black
     _draw_overlay_text(img, headline, hook, semaforo)
     _draw_brand_footer(img, source)
 
