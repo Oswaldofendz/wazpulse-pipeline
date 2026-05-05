@@ -14,7 +14,7 @@ import signal
 import sys
 import time
 
-from . import config, rss_fetcher, editorial_generator, telegram_bot
+from . import config, rss_fetcher, editorial_generator, telegram_bot, twitter_publisher
 from .supabase_client import count_candidates, count_sources_active
 
 logging.basicConfig(
@@ -87,10 +87,25 @@ def _tick_bloque7(cycle_n: int) -> None:
     )
 
 
+def _tick_bloque8(cycle_n: int) -> None:
+    # 1+2+3: RSS + editorial + Telegram (existing).
+    _tick_bloque7(cycle_n)
+    # 4: Twitter publisher — post approved cards.
+    log.info("cycle %d starting Twitter publisher step", cycle_n)
+    tw = twitter_publisher.run_one_cycle()
+    log.info(
+        "cycle %d Twitter done — eligible=%d published=%d skipped_no_card=%d errors=%d",
+        cycle_n,
+        tw["eligible"], tw["published"], tw["skipped_no_card"], tw["errors"],
+    )
+
+
 def tick(cycle_n: int) -> None:
     """Dispatch one cycle of work based on BLOQUE_ACTUAL."""
     try:
-        if config.BLOQUE_ACTUAL >= 7:
+        if config.BLOQUE_ACTUAL >= 8:
+            _tick_bloque8(cycle_n)
+        elif config.BLOQUE_ACTUAL >= 7:
             _tick_bloque7(cycle_n)
         elif config.BLOQUE_ACTUAL >= 6:
             _tick_bloque6(cycle_n)

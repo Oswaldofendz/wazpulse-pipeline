@@ -21,6 +21,12 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 
+# --- Twitter / X (required from Bloque 8) ---
+TWITTER_API_KEY             = os.getenv("TWITTER_API_KEY")
+TWITTER_API_SECRET          = os.getenv("TWITTER_API_SECRET")
+TWITTER_ACCESS_TOKEN        = os.getenv("TWITTER_ACCESS_TOKEN")
+TWITTER_ACCESS_TOKEN_SECRET = os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
+
 # --- Tunables ---
 CYCLE_INTERVAL_SECONDS = int(os.getenv("CYCLE_INTERVAL_SECONDS", "300"))
 LOG_LEVEL              = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -44,6 +50,13 @@ def assert_required_for_bloque(bloque: int) -> None:
     if bloque >= 7:
         required["TELEGRAM_BOT_TOKEN"] = TELEGRAM_BOT_TOKEN
         required["TELEGRAM_CHAT_ID"]   = TELEGRAM_CHAT_ID
+
+    # Bloque 8 — Twitter publisher
+    if bloque >= 8:
+        required["TWITTER_API_KEY"]             = TWITTER_API_KEY
+        required["TWITTER_API_SECRET"]          = TWITTER_API_SECRET
+        required["TWITTER_ACCESS_TOKEN"]        = TWITTER_ACCESS_TOKEN
+        required["TWITTER_ACCESS_TOKEN_SECRET"] = TWITTER_ACCESS_TOKEN_SECRET
 
     missing = [k for k, v in required.items() if not v]
     if missing:
