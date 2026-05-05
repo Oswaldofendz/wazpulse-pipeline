@@ -70,7 +70,7 @@ OVERLAY_BOTTOM = 1290
 OVERLAY_PAD_X  = 30
 OVERLAY_PAD_INNER = 36
 
-BRAND_Y        = 1305  # small brand mark squeezed into the last 45px
+BRAND_Y        = 1295  # brand mark centered in the 60px strip below overlay box
 
 # Semáforo accent — thin colored top border on the text box (replaces top stripe)
 SEMAFORO_BORDER_H = 5
@@ -78,7 +78,7 @@ SEMAFORO_BORDER_H = 5
 # Type sizes (tightened so 3-line headline + 3-line hook fit cleanly)
 SIZE_HEADLINE = 50     # white text in overlay
 SIZE_HOOK     = 40     # cyan accent text
-SIZE_BRAND    = 20     # small brand mark
+SIZE_BRAND    = 30     # WaCapital wordmark — prominent brand presence
 SIZE_FOOTER   = 16
 
 # Max wrapped lines per text block in the overlay
@@ -241,9 +241,78 @@ def _draw_hero_ai(img: Image.Image, ai: Image.Image) -> None:
     img.paste(cropped, (0, HERO_TOP))
 
 
+def _compute_overlay_fonts(
+    draw: ImageDraw.ImageDraw,
+    headline: str,
+    hook: str,
+    max_w: int,
+    available_h: int,
+) -> tuple:
+    """
+    Scale headline + hook fonts UP from the base sizes so the text fills as
+    much of the overlay box as possible.  Returns:
+        (size_head, size_hook, head_lines, hook_lines, head_lh, hook_lh)
+
+    Strategy: iterate from SIZE_HEADLINE upward (step 2px) until the combined
+    text height would exceed the box — then use the last valid size.
+    Ceiling: 1.7× the base sizes so ultra-short text doesn't look absurd.
+    """
+    MAX_HEAD = int(SIZE_HEADLINE * 1.7)   # ~85 px ceiling for headline
+    TOP_PAD  = 25
+    BOT_PAD  = 22
+    GAP      = 16   # vertical gap between headline block and hook block
+    inner_h  = available_h - TOP_PAD - BOT_PAD
+
+    best = None
+
+    for size_head in range(SIZE_HEADLINE, MAX_HEAD + 1, 2):
+        # Hook scales proportionally with the headline size.
+        size_hook = min(int(SIZE_HOOK * 1.7), int(size_head * SIZE_HOOK / SIZE_HEADLINE))
+
+        f_head   = _font_bold(size_head)
+        f_hook   = _font_bold(size_hook)
+        head_lh  = size_head + 8
+        hook_lh  = size_hook + 6
+
+        head_lines = _ellipsize(_wrap(draw, headline, f_head, max_w), MAX_HEADLINE_LINES)
+        head_h     = len(head_lines) * head_lh
+
+        if hook:
+            remaining    = inner_h - head_h - GAP
+            physical_max = max(1, remaining // hook_lh)
+            hook_lines   = _ellipsize(
+                _wrap(draw, hook, f_hook, max_w),
+                min(MAX_HOOK_LINES, physical_max),
+            )
+            hook_h  = len(hook_lines) * hook_lh
+            total_h = head_h + GAP + hook_h
+        else:
+            hook_lines = []
+            total_h    = head_h
+
+        if total_h <= inner_h:
+            best = (size_head, size_hook, head_lines, hook_lines, head_lh, hook_lh)
+        else:
+            break   # this size overflows — stop, use previous best
+
+    # Guaranteed fallback to base sizes (should never be None in practice).
+    if best is None:
+        f_head = _font_bold(SIZE_HEADLINE)
+        f_hook = _font_bold(SIZE_HOOK)
+        head_lh  = SIZE_HEADLINE + 8
+        hook_lh  = SIZE_HOOK + 6
+        head_lines = _ellipsize(_wrap(draw, headline, f_head, max_w), MAX_HEADLINE_LINES)
+        hook_lines = _ellipsize(_wrap(draw, hook, f_hook, max_w), MAX_HOOK_LINES) if hook else []
+        best = (SIZE_HEADLINE, SIZE_HOOK, head_lines, hook_lines, head_lh, hook_lh)
+
+    return best
+
+
 def _draw_overlay_text(img: Image.Image, headline: str, hook: str, semaforo: str) -> None:
     """
     Bottom text panel: dark rounded box with white headline + cyan hook.
+    Font sizes auto-scale UP to fill the available box height — short text
+    gets larger type instead of leaving blank space at the bottom.
     Thin semáforo-colored top border replaces the old top stripe.
     """
     draw = ImageDraw.Draw(img)
@@ -265,26 +334,23 @@ def _draw_overlay_text(img: Image.Image, headline: str, hook: str, semaforo: str
 
     inner_x_left  = OVERLAY_PAD_X + OVERLAY_PAD_INNER
     inner_x_right = CARD_W - OVERLAY_PAD_X - OVERLAY_PAD_INNER
-    max_w = inner_x_right - inner_x_left
+    max_w         = inner_x_right - inner_x_left
+    available_h   = OVERLAY_BOTTOM - OVERLAY_TOP
 
-    # Headline (white) — up to 3 lines, ellipsized only if extremely long.
-    f_head = _font_bold(SIZE_HEADLINE)
-    head_lines = _ellipsize(_wrap(draw, headline, f_head, max_w), MAX_HEADLINE_LINES)
-    head_lh    = SIZE_HEADLINE + 8
-    head_y     = OVERLAY_TOP + 25
+    size_head, size_hook, head_lines, hook_lines, head_lh, hook_lh = \
+        _compute_overlay_fonts(draw, headline, hook, max_w, available_h)
+
+    f_head = _font_bold(size_head)
+    f_hook = _font_bold(size_hook)
+
+    # Headline (white)
+    head_y = OVERLAY_TOP + 25
     for i, line in enumerate(head_lines):
         draw.text((inner_x_left, head_y + i * head_lh), line, font=f_head, fill=TEXT_PRIMARY)
 
-    # Hook (cyan accent) — up to 3 lines now (was 2). Only ellipsized if it
-    # truly doesn't fit; we trust Groq to keep hooks short.
-    if hook:
-        f_hook = _font_bold(SIZE_HOOK)
-        hook_lh = SIZE_HOOK + 6
-        hook_y  = head_y + len(head_lines) * head_lh + 14
-        # Hard physical limit: how many hook lines actually fit before the box bottom.
-        physical_max = max(1, (OVERLAY_BOTTOM - hook_y - 18) // hook_lh)
-        allowed      = min(MAX_HOOK_LINES, physical_max)
-        hook_lines = _ellipsize(_wrap(draw, hook, f_hook, max_w), allowed)
+    # Hook (cyan accent)
+    if hook_lines:
+        hook_y = head_y + len(head_lines) * head_lh + 16
         for i, line in enumerate(hook_lines):
             draw.text((inner_x_left, hook_y + i * hook_lh), line, font=f_hook, fill=ACCENT_CYAN)
 

@@ -178,55 +178,35 @@ def _common_header(post: dict) -> tuple[str, str]:
 
 
 def _format_message_text(post: dict) -> str:
-    """Full text-only message (used when no card image is available)."""
-    header, market_line = _common_header(post)
-
+    """Full text-only message (used when no card image is available).
+    Order: tweet copy → IA reasoning → source link."""
     flags     = post.get("compliance_flags") or {}
-    reasoning = flags.get("angle_reasoning") or ""
-
-    headline  = (post.get("headline") or "")[:200]
-    twitter   = (post.get("copy_twitter") or "")
-    instagram = (post.get("copy_instagram") or "")
+    reasoning = (flags.get("angle_reasoning") or "").strip()
+    twitter   = (post.get("copy_twitter") or "").strip()
     source    = post.get("source_link") or ""
 
-    parts = [
-        header,
-        _escape_html(market_line),
-        "",
-        f"<b>{_escape_html(headline)}</b>",
-        "",
-        f"🐦 <i>Twitter ({len(twitter)}/280):</i>",
-        _escape_html(twitter[:280]),
-        "",
-        "📷 <i>Instagram:</i>",
-        _escape_html(instagram[:600]),
-    ]
+    parts = [_escape_html(twitter[:280])]
+    if reasoning:
+        parts += ["", f"<i>💡 {_escape_html(reasoning[:300])}</i>"]
     if source:
         parts += ["", f'🌐 <a href="{_escape_html(source)}">Fuente</a>']
-    if reasoning:
-        parts += ["", f"<i>🤖 {_escape_html(reasoning)}</i>"]
     return "\n".join(parts)
 
 
 def _format_caption(post: dict) -> str:
-    """Compact caption for sendPhoto (1024 char limit). Card itself carries
-    the headline and asset visually, so we only need the contextual layer here."""
-    header, market_line = _common_header(post)
+    """Caption for sendPhoto (1024 char limit).
+    Order: tweet copy → IA reasoning → source link.
+    No metadata (category, stars, market alerts) — clean content only."""
     flags     = post.get("compliance_flags") or {}
-    reasoning = (flags.get("angle_reasoning") or "")[:200]
-    twitter   = (post.get("copy_twitter") or "")[:240]
+    reasoning = (flags.get("angle_reasoning") or "").strip()
+    twitter   = (post.get("copy_twitter") or "").strip()
     source    = post.get("source_link") or ""
 
-    parts = [
-        header,
-        _escape_html(market_line),
-        "",
-        _escape_html(twitter),
-    ]
+    parts = [_escape_html(twitter[:260])]
+    if reasoning:
+        parts += ["", f"<i>💡 {_escape_html(reasoning[:280])}</i>"]
     if source:
         parts += ["", f'🌐 <a href="{_escape_html(source)}">Fuente</a>']
-    if reasoning:
-        parts += ["", f"<i>🤖 {_escape_html(reasoning)}</i>"]
     return "\n".join(parts)
 
 
