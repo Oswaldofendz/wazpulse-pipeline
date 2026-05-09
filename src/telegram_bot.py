@@ -451,57 +451,99 @@ def _generate_prompt(post: dict, platform: str) -> str:
     return f"⚠️ Plataforma '{platform}' no soportada aún."
 
 
+_SEMAFORO_COLOR = {
+    "verde":    "#00C853 (verde brillante)",
+    "amarillo": "#FFD600 (amarillo alerta)",
+    "rojo":     "#FF1744 (rojo urgente)",
+    "neutral":  "#90A4AE (gris azulado)",
+}
+
+_SEMAFORO_BADGE = {
+    "verde":    "🟢 BULLISH",
+    "amarillo": "🟡 CAUTION",
+    "rojo":     "🔴 BEARISH",
+    "neutral":  "⚪ NEUTRAL",
+}
+
+
 def _generate_all_prompts(post: dict) -> str:
-    """Generate prompts for ALL platforms in one combined message.
+    """Full card brief — image prompt + text overlay + branding spec + all platforms.
 
-    Single-step flow: user clicks 🎨 Prompts → one cycle later → gets all
-    platform prompts at once. No secondary platform-selector step needed.
+    Single-step flow: user clicks 🎨 Prompts → gets everything needed to
+    recreate or brief a designer for the card, plus platform-specific prompts.
     """
-    headline = (post.get("headline") or "")[:200]
-    asset    = (post.get("asset_affected") or "financial markets").upper()
-    semaforo = post.get("semaforo") or "neutral"
-    tone     = _SEMAFORO_VISUAL.get(semaforo, "financial news context")
-    post_id  = post.get("id", "?")
+    headline  = (post.get("headline") or "")[:200]
+    copy_tw   = (post.get("copy_twitter") or post.get("copy_instagram") or "").strip()
+    asset     = (post.get("asset_affected") or "financial markets").upper()
+    semaforo  = post.get("semaforo") or "neutral"
+    tone      = _SEMAFORO_VISUAL.get(semaforo, "financial news context")
+    color     = _SEMAFORO_COLOR.get(semaforo, "#90A4AE (gris azulado)")
+    badge     = _SEMAFORO_BADGE.get(semaforo, "⚪ NEUTRAL")
+    flags     = post.get("compliance_flags") or {}
+    strength  = flags.get("angle_strength", "?")
+    post_id   = post.get("id", "?")
 
-    parts: list[str] = [
-        f"🎨 <b>PROMPTS — Post #{post_id}</b>",
-        f"📌 <i>{_escape_html(headline[:120])}</i>",
-        "",
-    ]
+    # Subheadline: first ~120 chars of twitter copy, stripped of emojis
+    subtext = copy_tw[:120] if copy_tw else headline[:100]
 
-    # Twitter / Instagram — same 4:5 portrait
-    tw_body = (
-        f"Cinematic editorial photograph featuring {asset}. "
-        f"Subject context: {headline[:160]}. "
+    # ── Background image prompt (Twitter/Instagram) ───────────────────────
+    bg_prompt = (
+        f"Cinematic editorial photograph: {asset}. "
+        f"Context: {headline[:160]}. "
         f"Visual mood: {tone}. "
         f"{_STYLE_BASE} "
         f"1080x1350px portrait 4:5."
     )
-    parts += [
-        "🐦 <b>TWITTER / 📷 INSTAGRAM</b>",
-        f"<code>{_escape_html(tw_body)}</code>",
-        "",
-    ]
 
-    # TikTok carousel
-    n      = _calc_tiktok_slides(post)
-    slides = _build_tiktok_slide_prompts(headline, asset, tone, n)
-    parts += [
-        f"🎵 <b>TIKTOK ({n} slides)</b>",
-        slides,
-        "",
-    ]
+    # ── TikTok slides ─────────────────────────────────────────────────────
+    n_slides = _calc_tiktok_slides(post)
+    slides   = _build_tiktok_slide_prompts(headline, asset, tone, n_slides)
 
-    # YouTube thumbnail
-    yt_body = (
+    # ── YouTube thumbnail ─────────────────────────────────────────────────
+    yt_prompt = (
         f"YouTube news thumbnail: {asset} — {headline[:120]}. "
         f"Bold, eye-catching, high contrast, 16:9 landscape 1280x720px. "
         f"Visual mood: {tone}. "
         f"{_STYLE_BASE}"
     )
-    parts += [
-        "▶️ <b>YOUTUBE THUMBNAIL</b>",
-        f"<code>{_escape_html(yt_body)}</code>",
+
+    parts: list[str] = [
+        f"🎨 <b>CARD BRIEF — Post #{post_id}</b>  ⭐ {strength}/5",
+        f"📌 <i>{_escape_html(headline[:140])}</i>",
+        "",
+
+        # ── Sección 1: Imagen background ──────────────────────────────────
+        "─────── 🖼 IMAGEN (fondo) ───────",
+        "<i>Pegá en Pollinations / Midjourney / DALL-E / Gemini:</i>",
+        f"<code>{_escape_html(bg_prompt)}</code>",
+        "",
+
+        # ── Sección 2: Text overlay ────────────────────────────────────────
+        "─────── 📝 TEXT OVERLAY ───────",
+        f"<b>TITULAR:</b>  <code>{_escape_html(headline[:90])}</code>",
+        f"<b>SUBTÍTULO:</b> <code>{_escape_html(subtext[:110])}</code>",
+        f"<b>TICKER:</b>   <code>{_escape_html(asset)}</code>",
+        f"<b>BADGE:</b>    {badge}",
+        "",
+
+        # ── Sección 3: Branding ────────────────────────────────────────────
+        "─────── 🎨 BRANDING WaCapital ───────",
+        f"Fondo:      <code>#0A0A0A</code> (negro profundo)",
+        f"Titular:    Blanco #FFFFFF · Bold · ~52px",
+        f"Subtítulo:  Gris   #CCCCCC · Regular · ~28px",
+        f"Acento:     <code>{color}</code>",
+        f"Logo:       Esquina inferior-izquierda · @WaCapital_",
+        f"Watermark:  Inferior derecho · @WaCapital_  |  wacapital.com",
+        "",
+
+        # ── Sección 4: TikTok ─────────────────────────────────────────────
+        f"─────── 🎵 TIKTOK ({n_slides} slides) ───────",
+        slides,
+        "",
+
+        # ── Sección 5: YouTube ────────────────────────────────────────────
+        "─────── ▶️ YOUTUBE THUMBNAIL ───────",
+        f"<code>{_escape_html(yt_prompt)}</code>",
     ]
 
     return "\n".join(parts)
@@ -526,7 +568,7 @@ def _handle_prompts_callback(
         return "prompts-stale"
 
     res = client.table("pulse_posts").select(
-        "id, headline, semaforo, asset_affected, compliance_flags, telegram_message_id"
+        "id, headline, semaforo, asset_affected, copy_twitter, copy_instagram, compliance_flags, telegram_message_id"
     ).eq("id", post_id).limit(1).execute()
     rows = res.data or []
     if not rows:

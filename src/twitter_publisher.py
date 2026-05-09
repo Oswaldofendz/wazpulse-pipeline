@@ -193,23 +193,28 @@ def run_one_cycle() -> dict:
             stats["errors"] += 1
             continue
 
-        # 2. Upload to Twitter media
+        # 2. Upload to Twitter media (best-effort — free tier may block v1.1)
         media_id = _upload_media(v1_api, img_bytes)
         if not media_id:
-            stats["errors"] += 1
-            continue
+            log.warning(
+                "  post %s media upload failed — will attempt text-only tweet", post_id
+            )
 
-        # 3. Post tweet
+        # 3. Post tweet (with card if media_id, else text-only)
         tweet_text = _build_tweet_text(post)
         try:
-            resp = v2_client.create_tweet(
-                text=tweet_text,
-                media_ids=[media_id],
-            )
+            if media_id:
+                resp = v2_client.create_tweet(
+                    text=tweet_text,
+                    media_ids=[media_id],
+                )
+            else:
+                resp = v2_client.create_tweet(text=tweet_text)
             tweet_id = str(resp.data["id"])
+            mode = "with card" if media_id else "text-only"
             log.info(
-                "  ✅ tweeted post=%s tweet_id=%s text=%.60s…",
-                post_id, tweet_id, tweet_text,
+                "  ✅ tweeted (%s) post=%s tweet_id=%s text=%.60s…",
+                mode, post_id, tweet_id, tweet_text,
             )
         except Exception as e:
             log.error("  create_tweet failed post=%s: %s", post_id, e)

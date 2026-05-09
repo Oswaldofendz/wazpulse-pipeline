@@ -8,8 +8,8 @@ Provider strategy:
   2. Pollinations.ai (Flux model) — zero-auth public endpoint, used as a
      final fallback when ALL Gemini keys are on cooldown.
 
-Both providers return PNG bytes. We cache by SHA256(prompt) in /tmp/ so
-re-renders within a deploy don't waste quota.
+Both providers return PNG bytes. Cache is keyed by sha256(prompt+seed) so
+different seeds always produce different images even for the same prompt.
 
 Image is generated at 9:16 (Imagen) or 1080x1350 (Pollinations) for portrait
 feed (Instagram, TikTok). The card_generator composes text overlay on top.
@@ -21,6 +21,7 @@ import base64
 import hashlib
 import logging
 import os
+import random
 import time
 from io import BytesIO
 from typing import Optional
@@ -32,14 +33,9 @@ from PIL import Image
 log = logging.getLogger("ai-image")
 
 CACHE_DIR    = "/tmp/wacapital_ai_images"
-# AI gen can be slow but we cap so a hung request doesn't block the cycle.
-# Pollinations Flux observed at ~85-90s typical; 120s gives headroom.
-# Imagen 3 is much faster (~3-8s), same timeout is fine.
 HTTP_TIMEOUT = 120
-PROMPT_MAX   = 480   # safety cap for prompt length
+PROMPT_MAX   = 480
 
-# How long to skip a key after a 429. 1 hour is generous; daily quotas reset
-# at UTC 00:00 so an hour cooldown handles per-minute hiccups too.
 KEY_COOLDOWN_SEC = 3600
 
 try:
@@ -50,12 +46,10 @@ except Exception as e:
 
 # ─── Key rotation state ─────────────────────────────────────────────────────
 
-# {key_id_short: epoch_when_usable_again}
 _key_cooldowns: dict[str, float] = {}
 
 
 def _gemini_keys() -> list[str]:
-    """Read all GEMINI_API_KEY{,_2,_3,_4,_5} env vars. Returns non-empty in order."""
     out: list[str] = []
     for var in ("GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3",
                 "GEMINI_API_KEY_4", "GEMINI_API_KEY_5"):
@@ -66,7 +60,6 @@ def _gemini_keys() -> list[str]:
 
 
 def _key_label(key: str) -> str:
-    """Short, log-safe identifier for a key."""
     return f"...{key[-6:]}" if len(key) > 6 else "?"
 
 
@@ -81,18 +74,14 @@ def _mark_key_exhausted(key: str) -> None:
 
 # ─── Cache ──────────────────────────────────────────────────────────────────
 
-def _cache_path(prompt: str) -> str:
-    h = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+def _cache_path(prompt: str, seed: int) -> str:
+    h = hashlib.sha256(f"{prompt}|{seed}".encode("utf-8")).hexdigest()
     return os.path.join(CACHE_DIR, f"{h}.png")
 
 
 # ─── Provider: Google Imagen 3 ──────────────────────────────────────────────
 
 def _imagen3(prompt: str, key: str) -> bytes:
-    """
-    POST to Imagen 3 predict endpoint. Returns raw PNG bytes.
-    Raises requests.HTTPError on non-2xx so caller can rotate keys.
-    """
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"imagen-3.0-generate-002:predict?key={key}"
@@ -101,7 +90,7 @@ def _imagen3(prompt: str, key: str) -> bytes:
         "instances": [{"prompt": prompt[:PROMPT_MAX]}],
         "parameters": {
             "sampleCount": 1,
-            "aspectRatio": "3:4",   # portrait, ~1024x1408 → fits 1080x1350 nicely
+            "aspectRatio": "3:4",
         },
     }
     resp = requests.post(url, json=body, timeout=HTTP_TIMEOUT)
@@ -115,17 +104,13 @@ def _imagen3(prompt: str, key: str) -> bytes:
 
 # ─── Provider: Pollinations.ai (Flux) ───────────────────────────────────────
 
-def _pollinations(prompt: str) -> bytes:
-    """Pollinations returns the PNG bytes directly via GET.
-
-    Using `turbo` model. Removed `enhance=true` because it added a slow
-    LLM-prompt-enhancement step (~10s extra). With enhance off and turbo,
-    requests should land closer to ~5-15s.
-    """
+def _pollinations(prompt: str, seed: int) -> bytes:
+    """Pollinations GET with explicit seed so every post gets a unique image
+    even when the prompt is identical (fixes the server-room repetition bug)."""
     safe = quote(prompt[:PROMPT_MAX])
     url = (
         f"https://image.pollinations.ai/prompt/{safe}"
-        "?width=1080&height=1350&model=turbo&nologo=true"
+        f"?width=1080&height=1350&model=turbo&nologo=true&seed={seed}"
     )
     resp = requests.get(url, timeout=HTTP_TIMEOUT, headers={
         "User-Agent": "WaCapital-PulseEngine/1.0",
@@ -136,24 +121,20 @@ def _pollinations(prompt: str) -> bytes:
 
 # ─── Public entry point ─────────────────────────────────────────────────────
 
-def generate(prompt: str, *, try_imagen: bool = True) -> Optional[Image.Image]:
+def generate(prompt: str, *, try_imagen: bool = True, seed: Optional[int] = None) -> Optional[Image.Image]:
     """
-    Generate a portrait image from `prompt`. Returns PIL.Image (RGB) or None
-    if every available provider failed.
+    Generate a portrait image from `prompt`. Returns PIL.Image (RGB) or None.
 
-    try_imagen:
-      True  → primary: Imagen 3 (multi-key rotation), fallback: Pollinations.
-              For premium/fresh posts where we want best quality.
-      False → skip Imagen entirely, use Pollinations only.
-              For backfill of historical posts — saves Imagen 3 daily quota.
-
-    Caches in /tmp/ keyed by sha256(prompt) — same prompt = no re-billing.
+    seed: pass candidate_id or any int to force a unique image per post.
+          If None, a random seed is chosen automatically.
     """
     if not prompt or not prompt.strip():
         return None
 
-    # Cache hit?
-    path = _cache_path(prompt)
+    if seed is None:
+        seed = random.randint(1, 999_999)
+
+    path = _cache_path(prompt, seed)
     if os.path.exists(path):
         try:
             return Image.open(path).convert("RGB")
@@ -164,7 +145,6 @@ def generate(prompt: str, *, try_imagen: bool = True) -> Optional[Image.Image]:
                 pass
 
     if try_imagen:
-        # Try each Gemini key in order, skipping ones on cooldown.
         for key in _gemini_keys():
             if _key_on_cooldown(key):
                 log.info("[ai-image] skipping key %s (on cooldown)", _key_label(key))
@@ -180,7 +160,6 @@ def generate(prompt: str, *, try_imagen: bool = True) -> Optional[Image.Image]:
                 return img
             except requests.HTTPError as e:
                 status = e.response.status_code if e.response is not None else "?"
-                # Pull a useful body snippet so we can diagnose 404s, scope errors, etc.
                 body_snippet = "?"
                 if e.response is not None:
                     try:
@@ -193,11 +172,8 @@ def generate(prompt: str, *, try_imagen: bool = True) -> Optional[Image.Image]:
                                 _key_label(key), status, body_snippet)
                     continue
                 if status == 404:
-                    # 404 = model not found / not enabled for this key.
-                    # Mark the key cooldown so we don't hammer it; logged so user can debug.
                     _mark_key_exhausted(key)
-                    log.warning("[ai-image] Imagen 3 NOT available for key %s (status=404). "
-                                "Key likely lacks Vertex AI / Imagen access. Body: %s",
+                    log.warning("[ai-image] Imagen 3 NOT available for key %s (status=404). Body: %s",
                                 _key_label(key), body_snippet)
                     continue
                 log.warning("[ai-image] Imagen 3 failed on key %s: status=%s body=%s",
@@ -207,13 +183,12 @@ def generate(prompt: str, *, try_imagen: bool = True) -> Optional[Image.Image]:
                 log.warning("[ai-image] Imagen 3 error on key %s: %s", _key_label(key), e)
                 continue
 
-    # Pollinations fallback (or primary when try_imagen=False).
     try:
         if try_imagen:
-            log.info("[ai-image] falling back to Pollinations (Flux)")
+            log.info("[ai-image] falling back to Pollinations (Flux) seed=%d", seed)
         else:
-            log.info("[ai-image] using Pollinations (Flux) — Imagen skipped")
-        png = _pollinations(prompt)
+            log.info("[ai-image] using Pollinations (Flux) seed=%d — Imagen skipped", seed)
+        png = _pollinations(prompt, seed)
         img = Image.open(BytesIO(png)).convert("RGB")
         try:
             img.save(path, format="PNG", optimize=True)
@@ -228,14 +203,6 @@ def generate(prompt: str, *, try_imagen: bool = True) -> Optional[Image.Image]:
 
 # ─── Prompt crafting ────────────────────────────────────────────────────────
 
-# Cinematic style modifiers appended to every Tier-1 prompt. Tuned for
-# Imagen 3 / Flux — produces dramatic editorial photography aesthetic close to
-# CryptoAlpha / WatcherGuru visual language.
-#
-# Strong negative-text directives: diffusion models LOVE to scribble fake
-# letters/logos inside images (we saw "BLENA TIGOP"-style gibberish). The
-# repetition of "no text / no letters / no signs" is the only reliable way
-# to suppress it on Flux; Imagen 3 respects it more reliably.
 _STYLE_TAIL = (
     "editorial photography, cinematic dramatic lighting, photorealistic, hyper-detailed, "
     "8k, sharp focus, vertical 9:16 composition, "
@@ -243,24 +210,28 @@ _STYLE_TAIL = (
     "no logos with text, no signs, no numbers, no watermark"
 )
 
-# ─── Dual-subject catalog ───────────────────────────────────────────────────
+# ─── Dual-subject catalog (~250 entries) ────────────────────────────────────
 # Each entry: (regex_pattern, category, english_visual_description)
-# Regex is matched case-insensitively against the combined headline+hook text.
-# The 'category' drives scene composition logic below.
 import re as _re
 
 _SUBJECTS = [
-    # ── Politicians / public figures — global
+    # ══ POLITICIANS & PUBLIC FIGURES ══════════════════════════════════════════
     (_re.compile(r'\btrump\b', _re.I),
-        'person', 'Donald Trump, intense expression, dark suit, power pose'),
+        'person', 'Donald Trump, intense expression, dark suit, power pose, American flag'),
     (_re.compile(r'\bpowell\b', _re.I),
         'person', 'Jerome Powell, stern expression, Federal Reserve formal attire'),
     (_re.compile(r'\bbiden\b', _re.I),
         'person', 'Joe Biden, formal presidential portrait, American flag background'),
+    (_re.compile(r'\byellen\b', _re.I),
+        'person', 'Janet Yellen, Treasury Secretary, formal portrait, Washington DC'),
+    (_re.compile(r'\bbessent\b', _re.I),
+        'person', 'Scott Bessent, US Treasury Secretary, formal suit, financial backdrop'),
     (_re.compile(r'\blagarde\b', _re.I),
         'person', 'Christine Lagarde, ECB president, elegant formal attire'),
+    (_re.compile(r'\bdraghi\b', _re.I),
+        'person', 'Mario Draghi, former ECB president, formal European setting'),
     (_re.compile(r'\bmusk\b', _re.I),
-        'person', 'Elon Musk, tech visionary, intense focused look'),
+        'person', 'Elon Musk, tech visionary, intense focused look, futuristic backdrop'),
     (_re.compile(r'\bxi\s*jinping\b', _re.I),
         'person', 'Xi Jinping, Chinese president, formal portrait, red background'),
     (_re.compile(r'\brutte\b', _re.I),
@@ -277,17 +248,56 @@ _SUBJECTS = [
         'person', 'Luiz Inácio Lula da Silva, Brazilian president, formal portrait'),
     (_re.compile(r'\bpetro\b', _re.I),
         'person', 'Gustavo Petro, Colombian president, formal portrait'),
+    (_re.compile(r'\bputin\b', _re.I),
+        'person', 'Vladimir Putin, Russian president, cold intense gaze, Kremlin backdrop'),
+    (_re.compile(r'\bnetanyahu\b', _re.I),
+        'person', 'Benjamin Netanyahu, Israeli PM, formal suit, Israeli flag backdrop'),
+    (_re.compile(r'\bmodi\b|\bnarendra\b', _re.I),
+        'person', 'Narendra Modi, Indian PM, traditional kurta, vibrant backdrop'),
+    (_re.compile(r'\berdogan\b|\berdoğan\b', _re.I),
+        'person', 'Recep Tayyip Erdogan, Turkish president, formal portrait, Ottoman motifs'),
+    (_re.compile(r'\bbukele\b', _re.I),
+        'person', 'Nayib Bukele, El Salvador president, casual hoodie, Bitcoin symbol'),
     (_re.compile(r'\bbuffett\b|\bwarren\s*buffett\b', _re.I),
-        'person', 'Warren Buffett, legendary investor, warm smile, Berkshire office'),
+        'person', 'Warren Buffett, legendary investor, warm smile, Berkshire boardroom'),
     (_re.compile(r'\bdimon\b|\bjamie\s*dimon\b', _re.I),
         'person', 'Jamie Dimon, JPMorgan CEO, confident executive portrait'),
     (_re.compile(r'\baltman\b|\bsam\s*altman\b', _re.I),
-        'person', 'Sam Altman, OpenAI CEO, tech leader, futuristic backdrop'),
+        'person', 'Sam Altman, OpenAI CEO, tech leader, futuristic AI backdrop'),
     (_re.compile(r'\bzuckerberg\b', _re.I),
-        'person', 'Mark Zuckerberg, Meta CEO, casual tech style, intense focus'),
-    (_re.compile(r'\bjensen\b|\bhuang\b', _re.I),
+        'person', 'Mark Zuckerberg, Meta CEO, casual tech style, VR metaverse backdrop'),
+    (_re.compile(r'\bjensen\s*huang\b|\bjensen\b|\bnvidia.*ceo\b', _re.I),
         'person', 'Jensen Huang, Nvidia CEO, signature leather jacket, GPU chip backdrop'),
-    # ── Countries / regions (Spanish + English)
+    (_re.compile(r'\btim\s*cook\b', _re.I),
+        'person', 'Tim Cook, Apple CEO, minimalist style, Apple Park backdrop'),
+    (_re.compile(r'\bsatya\s*nadella\b|\bnadella\b', _re.I),
+        'person', 'Satya Nadella, Microsoft CEO, formal portrait, cloud tech backdrop'),
+    (_re.compile(r'\bsundar\s*pichai\b|\bpichai\b', _re.I),
+        'person', 'Sundar Pichai, Google CEO, formal portrait, colorful Google campus'),
+    (_re.compile(r'\bbezos\b', _re.I),
+        'person', 'Jeff Bezos, Amazon founder, intense gaze, rocket and warehouse backdrop'),
+    (_re.compile(r'\bgates\b|\bbill\s*gates\b', _re.I),
+        'person', 'Bill Gates, philanthropist, glasses, global health and tech backdrop'),
+    (_re.compile(r'\bsoros\b', _re.I),
+        'person', 'George Soros, financier, formal portrait, global markets backdrop'),
+    (_re.compile(r'\bdalio\b|\bray\s*dalio\b', _re.I),
+        'person', 'Ray Dalio, Bridgewater founder, calm wisdom, global macro backdrop'),
+    (_re.compile(r'\bcathie\s*wood\b|\bark\s*invest\b', _re.I),
+        'person', 'Cathie Wood, ARK Invest, visionary portrait, disruptive tech backdrop'),
+    (_re.compile(r'\bmichael\s*saylor\b|\bsaylor\b', _re.I),
+        'person', 'Michael Saylor, MicroStrategy, intense conviction, Bitcoin backdrop'),
+    (_re.compile(r'\bvitalik\b|\bbuterin\b', _re.I),
+        'person', 'Vitalik Buterin, Ethereum creator, casual intellectual, blockchain visualization'),
+    (_re.compile(r'\bcz\b|\bchangpeng\b|\bzhao\b', _re.I),
+        'person', 'CZ Changpeng Zhao, Binance founder, casual portrait, crypto exchange backdrop'),
+    (_re.compile(r'\bfink\b|\blarry\s*fink\b', _re.I),
+        'person', 'Larry Fink, BlackRock CEO, authoritative portrait, global finance backdrop'),
+    (_re.compile(r'\bpellegrini\b', _re.I),
+        'person', 'Robert Fico or Slovak leader, formal European political portrait'),
+    (_re.compile(r'\borban\b|\borbán\b', _re.I),
+        'person', 'Viktor Orbán, Hungarian PM, strong nationalist portrait, EU backdrop'),
+
+    # ══ COUNTRIES & REGIONS ════════════════════════════════════════════════════
     (_re.compile(r'\beuropa\b|\bue\b|\beurope\b|\beuropeos?\b|\beuropean\b|\beurop[aeo]\b', _re.I),
         'place', 'European Union flag, golden stars circle on deep blue'),
     (_re.compile(r'\bee\.uu\.|\busa\b|\bamerica\b|\bamerican\b|\bunited\s*states\b|\bestados\s*unidos\b', _re.I),
@@ -317,16 +327,63 @@ _SUBJECTS = [
     (_re.compile(r'\bfranci?a?\b|\bfrench\b', _re.I),
         'place', 'France, Paris skyline, Eiffel Tower, elegant blue-white-red tricolor'),
     (_re.compile(r'\bcorea\b|\bkorea\b|\bkorean\b', _re.I),
-        'place', 'South Korea, Seoul modern skyline, technology and finance hub'),
-    (_re.compile(r'\bt[uú]nez\b|\bturqu[ií]a\b|\bturkey\b|\bturkish\b', _re.I),
-        'place', 'Turkey, Istanbul Bosphorus bridge, East meets West skyline'),
-    # ── Strategic locations / institutions
+        'place', 'South Korea, Seoul modern skyline, technology and finance hub, K-pop neon'),
+    (_re.compile(r'\btaiwan\b|\btaiwanese\b', _re.I),
+        'place', 'Taiwan, Taipei 101 tower, semiconductor factory, dramatic mountain backdrop'),
+    (_re.compile(r'\bcanad[áa]\b|\bcanadian\b|\bcanadiense\b', _re.I),
+        'place', 'Canada, Toronto skyline, maple leaf flag, oil sands landscape'),
+    (_re.compile(r'\baustralia\b|\baustralian\b', _re.I),
+        'place', 'Australia, Sydney Opera House, mining industry, dramatic outback'),
+    (_re.compile(r'\bsuiza\b|\bswitzerland\b|\bswiss\b', _re.I),
+        'place', 'Switzerland, Alps mountain backdrop, Zurich financial district, Swiss flag'),
+    (_re.compile(r'\bsingapur\b|\bsingapore\b|\bsingaporean\b', _re.I),
+        'place', 'Singapore, Marina Bay Sands, futuristic skyline, financial hub neon'),
+    (_re.compile(r'\bemiratos?\b|\buae\b|\bdubai\b|\babu\s*dhabi\b', _re.I),
+        'place', 'Dubai skyline, Burj Khalifa, gold and glass towers, desert sunset'),
+    (_re.compile(r'\bhong\s*kong\b', _re.I),
+        'place', 'Hong Kong skyline, Victoria Harbour, dense neon towers, financial hub'),
+    (_re.compile(r'\bturqu[ií]a\b|\bturkey\b|\bturkish\b|\bt[uú]nez\b', _re.I),
+        'place', 'Turkey, Istanbul Bosphorus bridge, minarets, East meets West skyline'),
+    (_re.compile(r'\bpoland\b|\bpolonia\b|\bpolish\b', _re.I),
+        'place', 'Poland, Warsaw financial district, European growth, Polish flag'),
+    (_re.compile(r'\bsudáfrica\b|\bsouth\s*africa\b|\bsudafricano\b|\bsarb\b', _re.I),
+        'place', 'South Africa, Johannesburg skyline, gold mine, Table Mountain backdrop'),
+    (_re.compile(r'\bnigeria\b|\bnigeriano\b|\bafrica\b|\bafricano\b', _re.I),
+        'place', 'Africa, Lagos skyline, natural resources, continent silhouette at dusk'),
+    (_re.compile(r'\bchile\b|\bchileno\b', _re.I),
+        'place', 'Chile, Andes mountains, copper mine, Santiago modern skyline'),
+    (_re.compile(r'\bcolom?bia\b|\bcolombian\b|\bcolombiano\b', _re.I),
+        'place', 'Colombia, Bogotá skyline, coffee plantation, Andes mountains'),
+    (_re.compile(r'\bper[uú]\b|\bperuano\b|\bperuvian\b', _re.I),
+        'place', 'Peru, Machu Picchu, mining industry, Lima financial district'),
+    (_re.compile(r'\bvenezuela\b|\bvenezolano\b', _re.I),
+        'place', 'Venezuela, oil refinery, dramatic economic backdrop, Caracas skyline'),
+    (_re.compile(r'\bvietnam\b|\bvietnamese\b', _re.I),
+        'place', 'Vietnam, Ho Chi Minh City skyline, manufacturing hub, rapid growth'),
+    (_re.compile(r'\bpakist[aá]n\b|\bpakistani\b', _re.I),
+        'place', 'Pakistan, Karachi financial district, dramatic mountainous backdrop'),
+    (_re.compile(r'\bespa[ñn]a\b|\bspain\b|\bspanish\b|\bespañol\b', _re.I),
+        'place', 'Spain, Madrid financial district, Sagrada Familia, red-yellow flag'),
+    (_re.compile(r'\bital[ia]\b|\bitalian\b|\bitaliano\b', _re.I),
+        'place', 'Italy, Milan financial district, Colosseum backdrop, tricolor flag'),
+    (_re.compile(r'\bpaises\s*bajos\b|\bnetherlands\b|\bdutch\b|\bholanda\b', _re.I),
+        'place', 'Netherlands, Amsterdam canals, Port of Rotterdam, tulip fields at dusk'),
+    (_re.compile(r'\bsuecia\b|\bsweden\b|\bswedish\b|\bnorway\b|\bnoruega\b', _re.I),
+        'place', 'Scandinavia, Nordic financial hub, clean energy landscape, Nordic flags'),
+    (_re.compile(r'\bucrania\b|\bukraine\b|\bukrainian\b', _re.I),
+        'place', 'Ukraine, war-torn landscape, resilient Kyiv skyline, yellow-blue flag'),
+
+    # ══ STRATEGIC LOCATIONS & INSTITUTIONS ════════════════════════════════════
     (_re.compile(r'\bhormuz\b', _re.I),
         'place', 'Strait of Hormuz aerial view, oil tankers on blue water, narrow rocky passage'),
     (_re.compile(r'\bpanama\b|\bcanal\b', _re.I),
         'place', 'Panama Canal, massive cargo ships, lock system, aerial view'),
     (_re.compile(r'\bsuez\b', _re.I),
         'place', 'Suez Canal, container ships queue, Egyptian desert, aerial view'),
+    (_re.compile(r'\bmar\s*rojo\b|\bred\s*sea\b|\bhouthi\b', _re.I),
+        'place', 'Red Sea, cargo ships under threat, dramatic naval scene, Yemen coastline'),
+    (_re.compile(r'\bmar\s*del\s*sur\b|\bsouth\s*china\s*sea\b', _re.I),
+        'place', 'South China Sea, naval vessels, disputed islands, tense aerial view'),
     (_re.compile(r'\bwall\s*street\b', _re.I),
         'place', 'Wall Street, NYSE facade, American flags, financial district hustle'),
     (_re.compile(r'\bnasdaq\b', _re.I),
@@ -339,19 +396,26 @@ _SUBJECTS = [
         'place', 'IMF headquarters, Washington DC, global financial institution, world map'),
     (_re.compile(r'\bbanco\s*mundial\b|\bworld\s*bank\b', _re.I),
         'place', 'World Bank headquarters, international development, global cooperation'),
-    # ── Crypto assets
-    (_re.compile(r'\bbitcoin\b|\bbtc\b', _re.I),
+    (_re.compile(r'\bfomc\b|\bfed\s*meeting\b|\breunion\s*fed\b', _re.I),
+        'place', 'Federal Reserve FOMC meeting room, central bankers, rate decision drama'),
+    (_re.compile(r'\bg7\b|\bg20\b|\bcumbre\b|\bsummit\b', _re.I),
+        'place', 'G7 G20 summit, world leaders at round table, international diplomacy'),
+    (_re.compile(r'\bdavos\b|\bwef\b|\bworld\s*economic\b', _re.I),
+        'place', 'Davos World Economic Forum, snowy Alps, global elite gathering'),
+
+    # ══ CRYPTOCURRENCIES ════════════════════════════════════════════════════════
+    (_re.compile(r'\bbitcoin\b|\bbtc\b|\bsatoshi\b', _re.I),
         'crypto', 'glowing golden Bitcoin coin, metallic embossed B, dramatic reflections, dark background'),
     (_re.compile(r'\bethereum\b|\beth\b', _re.I),
         'crypto', 'glowing Ethereum diamond crystal, silver-blue shimmer, futuristic'),
     (_re.compile(r'\bsolana\b|\bsol\b', _re.I),
-        'crypto', 'Solana coin, iridescent purple-teal gradient glow'),
+        'crypto', 'Solana coin, iridescent purple-teal gradient glow, high-speed blockchain'),
     (_re.compile(r'\bripple\b|\bxrp\b', _re.I),
-        'crypto', 'XRP Ripple coin, sleek blue metallic, global payments network visualization'),
+        'crypto', 'XRP Ripple coin, sleek blue metallic, global payments network'),
     (_re.compile(r'\bbinance\b|\bbnb\b', _re.I),
-        'crypto', 'Binance coin BNB, golden yellow glow, exchange platform'),
+        'crypto', 'Binance coin BNB, golden yellow glow, crypto exchange platform'),
     (_re.compile(r'\bdogecoin\b|\bdoge\b', _re.I),
-        'crypto', 'Dogecoin with Shiba Inu dog face, golden coin, meme energy'),
+        'crypto', 'Dogecoin with Shiba Inu dog face, golden coin, viral meme energy'),
     (_re.compile(r'\bcardano\b|\bada\b', _re.I),
         'crypto', 'Cardano ADA coin, navy blue metallic, blockchain network nodes'),
     (_re.compile(r'\bavalanche\b|\bavax\b', _re.I),
@@ -359,8 +423,25 @@ _SUBJECTS = [
     (_re.compile(r'\bpolkadot\b|\bdot\b', _re.I),
         'crypto', 'Polkadot DOT coin, colorful interconnected dots network'),
     (_re.compile(r'\bchainlink\b|\blink\b', _re.I),
-        'crypto', 'Chainlink LINK coin, blue hexagonal, oracle network'),
-    # ── Major companies — finance
+        'crypto', 'Chainlink LINK coin, blue hexagonal, oracle network visualization'),
+    (_re.compile(r'\btether\b|\busdt\b|\busdc\b|\bstablecoin\b', _re.I),
+        'crypto', 'stablecoin dollar-pegged coin, green stable glow, digital dollar'),
+    (_re.compile(r'\bshiba\b|\bshib\b', _re.I),
+        'crypto', 'Shiba Inu SHIB meme coin, cute dog face, explosive pink glow'),
+    (_re.compile(r'\buniswap\b|\buni\b', _re.I),
+        'crypto', 'Uniswap pink unicorn logo, DeFi liquidity pools, decentralized'),
+    (_re.compile(r'\baave\b|\bdefi\b|\bdescentraliz\b|\bdecentraliz\b', _re.I),
+        'crypto', 'DeFi protocol visualization, decentralized finance, blockchain nodes glow'),
+    (_re.compile(r'\bnear\b|\bcosmos\b|\batom\b', _re.I),
+        'crypto', 'blockchain interoperability visualization, multiple chains connecting'),
+    (_re.compile(r'\bcoinbase\b', _re.I),
+        'company', 'Coinbase headquarters, crypto exchange platform, blue corporate'),
+    (_re.compile(r'\bmicrostrategy\b', _re.I),
+        'company', 'MicroStrategy corporate office, Bitcoin treasury, bold financial bet'),
+    (_re.compile(r'\bethf\b|\bbitcoin\s*etf\b|\bcrypto\s*etf\b', _re.I),
+        'market', 'cryptocurrency ETF launch, Wall Street meets Bitcoin, golden opportunity'),
+
+    # ══ FINANCE COMPANIES ════════════════════════════════════════════════════════
     (_re.compile(r'\bblackrock\b', _re.I),
         'company', 'BlackRock corporate skyscraper, glass tower, financial district skyline at dusk'),
     (_re.compile(r'\bberkshire\b', _re.I),
@@ -372,100 +453,328 @@ _SUBJECTS = [
     (_re.compile(r'\bubs\b', _re.I),
         'company', 'UBS bank headquarters, Zurich precision, Swiss financial excellence'),
     (_re.compile(r'\bhsbc\b', _re.I),
-        'company', 'HSBC bank tower, Hong Kong skyline, global banking'),
+        'company', 'HSBC bank tower, Hong Kong skyline, global banking network'),
     (_re.compile(r'\bdeutsche\s*bank\b', _re.I),
-        'company', 'Deutsche Bank twin towers Frankfurt, European finance'),
+        'company', 'Deutsche Bank twin towers Frankfurt, European finance power'),
     (_re.compile(r'\bvanguard\b', _re.I),
-        'company', 'Vanguard investment funds, global portfolio visualization'),
+        'company', 'Vanguard investment funds, global portfolio ETF visualization'),
     (_re.compile(r'\bfidelity\b', _re.I),
-        'company', 'Fidelity Investments corporate campus, asset management'),
-    # ── Major companies — tech
-    (_re.compile(r'\btesla\b', _re.I),
-        'company', 'Tesla electric car, sleek futuristic design, neon charging station'),
-    (_re.compile(r'\bapple\b', _re.I),
-        'company', 'Apple Park campus aerial, iconic bitten apple logo, minimalist design'),
-    (_re.compile(r'\bnvidia\b', _re.I),
-        'company', 'Nvidia GPU chip, glowing green circuits, AI data center server racks'),
+        'company', 'Fidelity Investments corporate campus, asset management giant'),
     (_re.compile(r'\bgoldman\b|\bgoldman\s*sachs\b', _re.I),
         'company', 'Goldman Sachs glass skyscraper, Manhattan skyline, finance power'),
     (_re.compile(r'\bjpmorgan\b|\bj\.?p\.?\s*morgan\b', _re.I),
         'company', 'JPMorgan Chase headquarters, Wall Street tower, banking giant'),
+    (_re.compile(r'\bwells\s*fargo\b', _re.I),
+        'company', 'Wells Fargo stagecoach logo, bank headquarters, American West heritage'),
+    (_re.compile(r'\bbank\s*of\s*america\b|\bbofa\b', _re.I),
+        'company', 'Bank of America tower, Charlotte skyline, corporate banking'),
+    (_re.compile(r'\bbarclays\b', _re.I),
+        'company', 'Barclays Bank headquarters, London Canary Wharf, British finance'),
+    (_re.compile(r'\bsantander\b', _re.I),
+        'company', 'Santander Bank red eagle logo, European headquarters, global banking'),
+    (_re.compile(r'\bbbva\b', _re.I),
+        'company', 'BBVA bank headquarters, Spain and Latin America banking giant'),
+    (_re.compile(r'\bpimco\b', _re.I),
+        'company', 'PIMCO bond market, fixed income visualization, Newport Beach campus'),
+    (_re.compile(r'\bcitadel\b', _re.I),
+        'company', 'Citadel hedge fund, Chicago skyline, high-frequency trading screens'),
+    (_re.compile(r'\bbridgewater\b', _re.I),
+        'company', 'Bridgewater Associates, macro hedge fund, global economic visualization'),
+    (_re.compile(r'\boppenheimer\b', _re.I),
+        'company', 'investment bank trading floor, financial analysts at multiple screens'),
+    (_re.compile(r'\brobinhood\b', _re.I),
+        'company', 'Robinhood app, retail investing revolution, green arrow on phone screen'),
+    (_re.compile(r'\bcharles\s*schwab\b|\bschwab\b', _re.I),
+        'company', 'Charles Schwab brokerage, retail investor platform, financial freedom'),
+    (_re.compile(r'\bpaypal\b', _re.I),
+        'company', 'PayPal headquarters, digital payments flow, blue corporate fintech'),
+    (_re.compile(r'\bvisa\b', _re.I),
+        'company', 'Visa payment network, global transactions visualization, blue brand'),
+    (_re.compile(r'\bmastercard\b', _re.I),
+        'company', 'Mastercard interlocking circles, global payments, financial network'),
+    (_re.compile(r'\bstripe\b', _re.I),
+        'company', 'Stripe fintech, payment infrastructure, developer-focused tech'),
+    (_re.compile(r'\bklarna\b|\baffirm\b|\bbnpl\b', _re.I),
+        'company', 'buy-now-pay-later fintech app, consumer credit, digital shopping'),
+
+    # ══ TECH COMPANIES ═══════════════════════════════════════════════════════════
+    (_re.compile(r'\btesla\b', _re.I),
+        'company', 'Tesla electric car, sleek futuristic design, neon charging station'),
+    (_re.compile(r'\bapple\b', _re.I),
+        'company', 'Apple Park campus aerial, iconic bitten apple, minimalist design'),
+    (_re.compile(r'\bnvidia\b', _re.I),
+        'company', 'Nvidia GPU chip, glowing green circuits, AI data center server racks'),
     (_re.compile(r'\bmicrosoft\b', _re.I),
         'company', 'Microsoft campus Redmond, Windows logo, cloud computing visualization'),
     (_re.compile(r'\bamazon\b|\baws\b', _re.I),
         'company', 'Amazon fulfillment center, delivery drones, cloud server infrastructure'),
     (_re.compile(r'\bgoogle\b|\balphabet\b', _re.I),
         'company', 'Google Googleplex campus, colorful futuristic architecture, AI lab'),
-    (_re.compile(r'\bmeta\b|\bfacebook\b|\binstagram\b', _re.I),
+    (_re.compile(r'\bmeta\b|\bfacebook\b', _re.I),
         'company', 'Meta headquarters, VR headsets, social network visualization, futuristic'),
-    (_re.compile(r'\bopenai\b', _re.I),
+    (_re.compile(r'\bopenai\b|\bchatgpt\b', _re.I),
         'company', 'OpenAI neural network visualization, AI brain, futuristic blue glow'),
     (_re.compile(r'\btsmc\b', _re.I),
         'company', 'TSMC semiconductor chip factory, Taiwan precision manufacturing'),
     (_re.compile(r'\bintel\b', _re.I),
         'company', 'Intel CPU chip, silicon wafer, semiconductor manufacturing'),
     (_re.compile(r'\bamd\b', _re.I),
-        'company', 'AMD processor chip, red glow, computing power'),
+        'company', 'AMD Ryzen processor chip, red glow, computing performance'),
     (_re.compile(r'\bpalantir\b', _re.I),
         'company', 'Palantir data analytics visualization, government intelligence, dark screens'),
-    (_re.compile(r'\boppenheimer\b', _re.I),
-        'company', 'investment bank trading floor, financial analysts at screens'),
-    # ── Commodities
+    (_re.compile(r'\bnetflix\b', _re.I),
+        'company', 'Netflix red logo, streaming platform, Hollywood content production'),
+    (_re.compile(r'\bspotify\b', _re.I),
+        'company', 'Spotify green soundwaves, music streaming, audio visualization'),
+    (_re.compile(r'\bairbnb\b', _re.I),
+        'company', 'Airbnb cozy homes worldwide, travel disruption, sharing economy'),
+    (_re.compile(r'\buber\b|\blyft\b', _re.I),
+        'company', 'ride-sharing app, city streets with autonomous vehicles, gig economy'),
+    (_re.compile(r'\bsalesforce\b', _re.I),
+        'company', 'Salesforce cloud CRM, San Francisco headquarters, SaaS enterprise'),
+    (_re.compile(r'\boracle\b', _re.I),
+        'company', 'Oracle database headquarters, Austin Texas, enterprise cloud'),
+    (_re.compile(r'\bqualcomm\b', _re.I),
+        'company', 'Qualcomm Snapdragon chip, mobile semiconductor, San Diego headquarters'),
+    (_re.compile(r'\bbroadcom\b', _re.I),
+        'company', 'Broadcom semiconductor chips, network infrastructure, tech supply chain'),
+    (_re.compile(r'\barm\s*holdings\b|\barm\b', _re.I),
+        'company', 'ARM processor architecture, chip design blueprint, mobile computing'),
+    (_re.compile(r'\btiktok\b|\bbytedance\b', _re.I),
+        'company', 'TikTok logo, viral short video, ByteDance Chinese tech, social media'),
+    (_re.compile(r'\bsnap\b|\bsnapchat\b', _re.I),
+        'company', 'Snapchat ghost logo, social media, augmented reality filters'),
+    (_re.compile(r'\bshopify\b', _re.I),
+        'company', 'Shopify e-commerce platform, merchant success, green brand'),
+    (_re.compile(r'\bibm\b', _re.I),
+        'company', 'IBM blue corporate headquarters, quantum computing, enterprise AI'),
+    (_re.compile(r'\bcisco\b', _re.I),
+        'company', 'Cisco network infrastructure, internet backbone, corporate tech'),
+    (_re.compile(r'\bsamsung\b', _re.I),
+        'company', 'Samsung Galaxy devices, semiconductor fab, Korean tech titan'),
+    (_re.compile(r'\bsony\b', _re.I),
+        'company', 'Sony PlayStation, entertainment empire, Tokyo headquarters'),
+    (_re.compile(r'\balibaba\b', _re.I),
+        'company', 'Alibaba e-commerce empire, Hangzhou headquarters, Chinese tech giant'),
+    (_re.compile(r'\btencent\b', _re.I),
+        'company', 'Tencent WeChat, gaming empire, Shenzhen headquarters, Chinese tech'),
+    (_re.compile(r'\bbaidu\b', _re.I),
+        'company', 'Baidu AI search engine, Chinese internet giant, autonomous driving'),
+
+    # ══ AUTOMOTIVE ════════════════════════════════════════════════════════════════
+    (_re.compile(r'\bvolkswagen\b|\bvw\b|\bvolkswagen\s*ag\b', _re.I),
+        'company', 'Volkswagen factory floor, German automotive engineering, EV transformation'),
+    (_re.compile(r'\brivian\b', _re.I),
+        'company', 'Rivian electric truck, adventure-ready EV, forest trail backdrop'),
+    (_re.compile(r'\bmercedes\b|\bbenz\b|\bdaimler\b', _re.I),
+        'company', 'Mercedes-Benz three-pointed star, luxury automotive, German precision'),
+    (_re.compile(r'\bbmw\b', _re.I),
+        'company', 'BMW headquarters Munich, luxury vehicles, propeller logo roundel'),
+    (_re.compile(r'\bford\b', _re.I),
+        'company', 'Ford F-150 Lightning, American automotive, Dearborn Michigan factory'),
+    (_re.compile(r'\bgeneral\s*motors\b|\bgm\b', _re.I),
+        'company', 'General Motors headquarters Detroit, EV future, American auto giant'),
+    (_re.compile(r'\btoyota\b', _re.I),
+        'company', 'Toyota factory, hybrid vehicles, Japanese manufacturing excellence'),
+    (_re.compile(r'\bhonda\b', _re.I),
+        'company', 'Honda automotive and motorcycle, Japanese engineering, global brand'),
+    (_re.compile(r'\bnio\b', _re.I),
+        'company', 'NIO electric vehicle, Chinese EV challenger, sleek futuristic design'),
+    (_re.compile(r'\bbyd\b', _re.I),
+        'company', 'BYD electric vehicle, Chinese auto giant, green energy future'),
+    (_re.compile(r'\blucid\b', _re.I),
+        'company', 'Lucid Motors luxury EV, Air sedan, California desert highway'),
+    (_re.compile(r'\bstell?antis\b', _re.I),
+        'company', 'Stellantis multi-brand automotive group, European American merger'),
+    (_re.compile(r'\bautomotr[iz]?\b|\bautomot[iv]+e?\b|\bindustria.*auto\b|\bcar\s*indust\b', _re.I),
+        'market', 'automotive industry, car factory assembly line, global auto market'),
+
+    # ══ HEALTHCARE & PHARMA ════════════════════════════════════════════════════
+    (_re.compile(r'\bpfizer\b', _re.I),
+        'company', 'Pfizer pharmaceutical laboratory, drug discovery, vaccine vials'),
+    (_re.compile(r'\bmoderna\b', _re.I),
+        'company', 'Moderna mRNA technology, vaccine research lab, biotech innovation'),
+    (_re.compile(r'\bjohnson\s*&?\s*johnson\b|\bj&j\b|\bjnj\b', _re.I),
+        'company', 'Johnson & Johnson healthcare products, medical research, trusted brand'),
+    (_re.compile(r'\bmerck\b', _re.I),
+        'company', 'Merck pharmaceutical research, cancer drug, laboratory innovation'),
+    (_re.compile(r'\bastrazeneca\b', _re.I),
+        'company', 'AstraZeneca pharmaceutical, UK-Sweden biotech, drug pipeline'),
+    (_re.compile(r'\bnovartis\b', _re.I),
+        'company', 'Novartis Swiss pharmaceutical, Basel headquarters, drug research'),
+    (_re.compile(r'\broche\b', _re.I),
+        'company', 'Roche diagnostics and pharmaceuticals, Swiss precision medicine'),
+    (_re.compile(r'\bunitedhealth\b|\buhg\b', _re.I),
+        'company', 'UnitedHealth headquarters, health insurance giant, medical network'),
+    (_re.compile(r'\btenet\s*health\b|\bhca\b|\bhospital\b|\bhealthcare\b', _re.I),
+        'company', 'healthcare hospital complex, medical professionals, patient care facility'),
+    (_re.compile(r'\babbott\b', _re.I),
+        'company', 'Abbott medical devices, diagnostic innovation, healthcare technology'),
+    (_re.compile(r'\bgano\b|\bsupera\b.*expectativas\b|\bearnings\s*beat\b', _re.I),
+        'market', 'earnings beat celebration, stock chart surging green, trading floor cheers'),
+
+    # ══ ENERGY ═══════════════════════════════════════════════════════════════════
+    (_re.compile(r'\bexxon\b|\bexxonmobil\b', _re.I),
+        'company', 'ExxonMobil oil refinery, Texas headquarters, energy giant'),
+    (_re.compile(r'\bchevron\b', _re.I),
+        'company', 'Chevron offshore oil platform, energy production, California HQ'),
+    (_re.compile(r'\bshell\b', _re.I),
+        'company', 'Shell oil platform, global energy company, scallop shell logo'),
+    (_re.compile(r'\bbp\b', _re.I),
+        'company', 'BP energy transition, solar and oil, green flower logo'),
+    (_re.compile(r'\btotalenergies\b|\btotal\b', _re.I),
+        'company', 'TotalEnergies French oil major, energy transition, global operations'),
+    (_re.compile(r'\bnextera\b|\bener[gj][ií]a\s*renovable\b|\brenewable\b|\bgreen\s*energy\b|\benerg[ií]a\s*solar\b', _re.I),
+        'company', 'renewable energy solar farm and wind turbines, green future, clean power'),
+    (_re.compile(r'\bnuclear\b|\bur[aá]nio\b|\buranium\b', _re.I),
+        'commodity', 'nuclear power plant cooling towers, uranium fuel rods, atomic energy'),
+
+    # ══ RETAIL & CONSUMER ═════════════════════════════════════════════════════
+    (_re.compile(r'\bwalmart\b', _re.I),
+        'company', 'Walmart supercenter, retail giant, American consumer economy'),
+    (_re.compile(r'\btarget\b', _re.I),
+        'company', 'Target store, red bullseye, American retail competition'),
+    (_re.compile(r'\bcostco\b', _re.I),
+        'company', 'Costco warehouse, bulk shopping, membership retail giant'),
+    (_re.compile(r'\bhome\s*depot\b', _re.I),
+        'company', 'Home Depot orange store, hardware retail, housing market link'),
+    (_re.compile(r'\bnike\b', _re.I),
+        'company', 'Nike swoosh, athletic brand, sports performance, global empire'),
+    (_re.compile(r'\badidas\b', _re.I),
+        'company', 'Adidas three stripes, sportswear brand, European athletic fashion'),
+    (_re.compile(r'\blvmh\b|\blouisvuitton\b|\blujo\b|\bluxury\b', _re.I),
+        'company', 'LVMH luxury fashion, Paris runway, Vuitton monogram, ultra-wealthy'),
+    (_re.compile(r'\bmcdonald\b', _re.I),
+        'company', 'McDonald\'s golden arches, fast food empire, global franchise'),
+    (_re.compile(r'\bstarbucks\b', _re.I),
+        'company', 'Starbucks coffee cup, green mermaid logo, cafe culture'),
+    (_re.compile(r'\bcoca.?cola\b', _re.I),
+        'company', 'Coca-Cola red can, iconic beverage brand, global consumer'),
+    (_re.compile(r'\bpepsi\b', _re.I),
+        'company', 'PepsiCo beverage and snacks, globe logo, consumer goods'),
+
+    # ══ DEFENSE & AEROSPACE ═══════════════════════════════════════════════════
+    (_re.compile(r'\blockheed\b', _re.I),
+        'company', 'Lockheed Martin F-35 fighter jet, defense contractor, military tech'),
+    (_re.compile(r'\braytheon\b|\brtx\b', _re.I),
+        'company', 'Raytheon missile defense system, military technology, Pentagon contractor'),
+    (_re.compile(r'\bboeing\b', _re.I),
+        'company', 'Boeing aircraft manufacturing, Dreamliner, aerospace engineering'),
+    (_re.compile(r'\bairbus\b', _re.I),
+        'company', 'Airbus A380 aircraft, European aerospace, Toulouse headquarters'),
+    (_re.compile(r'\bdefensa\b|\bdefense\b|\bmilitar\b|\barmamento\b|\bweapon\b', _re.I),
+        'market', 'defense industry, military technology, armored vehicles, war preparation'),
+    (_re.compile(r'\bfedex\b', _re.I),
+        'company', 'FedEx delivery truck and plane, logistics giant, overnight shipping'),
+    (_re.compile(r'\bups\b', _re.I),
+        'company', 'UPS brown delivery trucks, global logistics, package delivery empire'),
+
+    # ══ COMMODITIES ═══════════════════════════════════════════════════════════
     (_re.compile(r'\bpetróleo\b|\bpetrol[eo]\b|\bcrude\b|\bwti\b|\bbrent\b|\boil\b', _re.I),
         'commodity', 'oil barrels and industrial refinery, flames at sunset, energy industry'),
     (_re.compile(r'\bgas\s*natural\b|\bnatural\s*gas\b|\bgnl\b|\blng\b', _re.I),
         'commodity', 'natural gas pipeline, industrial facility, flames, energy infrastructure'),
     (_re.compile(r'\bor[oa]\b|\bgold\b', _re.I),
-        'commodity', 'gold bars stacked in vault, gleaming warm light, safe haven'),
+        'commodity', 'gold bars stacked in vault, gleaming warm light, safe haven metal'),
     (_re.compile(r'\bplata\b|\bsilver\b', _re.I),
         'commodity', 'silver bullion coins and bars, cool metallic sheen, precious metal'),
     (_re.compile(r'\bcobre\b|\bcopper\b', _re.I),
-        'commodity', 'copper wire coils and ore, industrial orange-red metal'),
+        'commodity', 'copper wire coils and ore, industrial orange-red metal, mining'),
     (_re.compile(r'\blitio\b|\blithium\b', _re.I),
-        'commodity', 'lithium mine, electric battery cells, EV supply chain'),
-    (_re.compile(r'\btrigo\b|\bwheat\b|\bcorn\b|\bmaíz\b|\bsoja\b|\bsoybean\b', _re.I),
+        'commodity', 'lithium mine, electric battery cells, EV supply chain, white salt flat'),
+    (_re.compile(r'\bpaladio\b|\bpalladium\b|\bplatino\b|\bplatinum\b', _re.I),
+        'commodity', 'platinum and palladium precious metals, catalytic converter, rare mines'),
+    (_re.compile(r'\bniq?uel\b|\bnickel\b', _re.I),
+        'commodity', 'nickel ore and steel production, industrial metal, battery supply chain'),
+    (_re.compile(r'\baluminio\b|\baluminum\b|\baluminium\b', _re.I),
+        'commodity', 'aluminum smelter, industrial metal production, aerospace material'),
+    (_re.compile(r'\btrigo\b|\bwheat\b|\bcorn\b|\bmaíz\b|\bsoja\b|\bsoybean\b|\bagricult\b', _re.I),
         'commodity', 'grain fields at golden hour, agricultural harvest, commodity market'),
-    # ── Macro events / institutions
+    (_re.compile(r'\bcaf[eé]\b|\bcoffee\b|\bcacao\b|\bcocoa\b', _re.I),
+        'commodity', 'coffee plantation, roasted beans, commodity trading, tropical farm'),
+    (_re.compile(r'\baz[uú]car\b|\bsugar\b|\bcott?on\b|\balgodon\b', _re.I),
+        'commodity', 'sugar cane fields and cotton harvest, soft commodity trading'),
+
+    # ══ MACRO / MARKET EVENTS ══════════════════════════════════════════════════
     (_re.compile(r'\bwall\s*st\b|\bbolsa\b|\bstock\s*market\b|\bmercado\s*de\s*valores\b', _re.I),
         'market', 'stock market trading floor, screens with live charts, intense traders'),
     (_re.compile(r'\bcriptomoneda\b|\bcrypto\s*market\b|\bdigital\s*assets\b', _re.I),
-        'market', 'cryptocurrency exchange, digital screens, blockchain network visualization'),
+        'market', 'cryptocurrency exchange, digital screens, blockchain network glow'),
     (_re.compile(r'\bnonfarm\b|\bpayroll\b|\bjobs\s*report\b|\bempleo\b|\bdesempleo\b', _re.I),
-        'market', 'employment data, business people working, economic growth visualization'),
+        'market', 'employment data charts, job market surge, business people working'),
     (_re.compile(r'\binflaci[oó]n\b|\binflation\b|\bipc\b|\bcpi\b', _re.I),
-        'market', 'price tags rising, shopping cart, inflation graph, economic pressure'),
+        'market', 'price tags rising, shopping cart, inflation graph spiking, economic pressure'),
     (_re.compile(r'\btasa\s*de\s*inter[eé]s\b|\binterest\s*rate\b|\bhike\b|\brate\s*cut\b', _re.I),
-        'market', 'interest rate graph ascending, financial charts, central bank concept'),
+        'market', 'interest rate graph ascending, financial charts, central bank decision'),
     (_re.compile(r'\brecesi[oó]n\b|\brecession\b|\bcrash\b|\bcrisis\b', _re.I),
-        'market', 'financial crisis, red falling stock charts, dramatic dark atmosphere'),
+        'market', 'financial crisis, red falling stock charts, dramatic dark storm atmosphere'),
     (_re.compile(r'\baran?cel\b|\btariff\b|\btrade\s*war\b|\bguerra\s*comercial\b', _re.I),
-        'market', 'trade war concept, shipping containers, tariff barriers, global trade tension'),
-    (_re.compile(r'\bdeuda\b|\bdebt\b|\bbono\b|\bbond\b|\btesoro\b|\btreasury\b', _re.I),
-        'market', 'government bonds, treasury notes, national debt visualization, finance'),
+        'market', 'trade war concept, shipping containers stacked, tariff barriers, tension'),
+    (_re.compile(r'\bdeuda\b|\bdebt\b|\bbono\b|\bbond\b|\btesoro\b|\btreasury\b|\bendeudamiento\b', _re.I),
+        'market', 'government bonds, treasury debt visualization, national debt chart rising'),
     (_re.compile(r'\bipo\b|\bsalida\s*a\s*bolsa\b|\boferta\s*p[uú]blica\b', _re.I),
         'market', 'IPO ringing the opening bell at stock exchange, celebration, confetti'),
+    (_re.compile(r'\bfusi[oó]n\b|\badquisici[oó]n\b|\bmerger\b|\bacquisition\b|\bm&a\b', _re.I),
+        'market', 'corporate merger handshake, two companies becoming one, boardroom drama'),
+    (_re.compile(r'\bquiebra\b|\bbankruptcy\b|\bdefault\b|\binsolvencia\b', _re.I),
+        'market', 'bankruptcy filing, company collapse, falling building concept, financial ruin'),
+    (_re.compile(r'\betf\b|\bfondo\s*[ií]ndice\b|\bindex\s*fund\b', _re.I),
+        'market', 'ETF index fund visualization, diversified portfolio, passive investing'),
+    (_re.compile(r'\bhedge\s*fund\b|\bfondo\s*especulativo\b', _re.I),
+        'market', 'hedge fund trading desk, sophisticated investors, quant algorithms'),
+    (_re.compile(r'\bventure\s*capital\b|\bvc\b|\bstartup\b', _re.I),
+        'market', 'startup pitch meeting, venture capital investment, Silicon Valley garage'),
+    (_re.compile(r'\binteligencia\s*artificial\b|\bai\b|\bmachine\s*learning\b|\bllm\b', _re.I),
+        'market', 'artificial intelligence neural network, glowing brain circuits, AI data center'),
+    (_re.compile(r'\bsemiconductor\b|\bchip\b|\bwafer\b', _re.I),
+        'market', 'semiconductor chip close-up, silicon wafer fabrication, nano-scale circuits'),
+    (_re.compile(r'\bciberseguridad\b|\bcybersecurity\b|\bhack\b', _re.I),
+        'market', 'cybersecurity shield, digital threat visualization, hacker dark screen'),
+    (_re.compile(r'\bcadena\s*de\s*suministro\b|\bsupply\s*chain\b', _re.I),
+        'market', 'global supply chain, container ships and logistics map, interconnected world'),
+    (_re.compile(r'\bdxy\b|\bd[oó]lar\b|\bdollar\b', _re.I),
+        'market', 'US dollar bills and coins, DXY index chart, global reserve currency power'),
+    (_re.compile(r'\byen\b|\bjpy\b', _re.I),
+        'market', 'Japanese yen currency, Bank of Japan, Tokyo financial district at night'),
+    (_re.compile(r'\beuro\b|\beur\b', _re.I),
+        'market', 'Euro currency coins and bills, European Central Bank, Frankfurt skyline'),
+    (_re.compile(r'\bpib\b|\bgdp\b|\bcrecimiento\s*econ[oó]mico\b|\beconomic\s*growth\b', _re.I),
+        'market', 'GDP economic growth chart, global economy rising, prosperity visualization'),
+    (_re.compile(r'\brating\b|\bcalificaci[oó]n\b|\bmoody\b|\bfitch\b|\bs&p\b|\bstandard.*poor\b', _re.I),
+        'market', 'credit rating agency scales, financial rating decision, bond market impact'),
 ]
 
-# Scene composition templates — indexed by (category1, category2) of the two subjects.
-# Placeholders: {0} = first subject description, {1} = second subject description.
+# ─── Scene composition templates ────────────────────────────────────────────
 _SCENE_TEMPLATES: dict[tuple, str] = {
-    ('person', 'place'):    '{0} standing before the {1}, dramatic lighting, power pose',
-    ('person', 'crypto'):   '{0}, powerful expression, holding a {1} coin in hand, dramatic glow',
-    ('person', 'company'):  '{0} in front of {1} headquarters, leadership portrait',
+    ('person', 'place'):     '{0} standing before the {1}, dramatic lighting, power pose',
+    ('person', 'crypto'):    '{0}, powerful expression, holding a {1} coin in hand, dramatic glow',
+    ('person', 'company'):   '{0} in front of {1} headquarters, leadership portrait',
     ('person', 'commodity'): '{0} with {1} in the dramatic background',
-    ('person', 'market'):   '{0} observing financial screens showing market data',
-    ('place', 'crypto'):    '{1} floating above {0} skyline, digital golden glow',
-    ('place', 'company'):   '{1} tower rising from {0} cityscape at dusk',
-    ('place', 'commodity'): '{1} pipelines and tankers near {0} coastline',
-    ('place', 'market'):    '{0} financial district at night, lit trading screens',
-    ('place', 'place'):     'confrontation between {0} and {1}, dramatic split composition',
-    ('crypto', 'company'):  '{0} coin hovering next to {1} skyscraper, neon glow',
-    ('crypto', 'market'):   '{0} coin above a sea of financial data screens',
-    ('company', 'market'):  '{0} headquarters overlooking a volatile stock market',
+    ('person', 'market'):    '{0} observing financial screens showing market data',
+    ('place', 'crypto'):     '{1} floating above {0} skyline, digital golden glow',
+    ('place', 'company'):    '{1} tower rising from {0} cityscape at dusk',
+    ('place', 'commodity'):  '{1} pipelines and tankers near {0} coastline',
+    ('place', 'market'):     '{0} financial district at night, lit trading screens',
+    ('place', 'place'):      'confrontation between {0} and {1}, dramatic split composition',
+    ('crypto', 'company'):   '{0} coin hovering next to {1} skyscraper, neon glow',
+    ('crypto', 'market'):    '{0} coin above a sea of financial data screens',
+    ('company', 'market'):   '{0} headquarters overlooking a volatile stock market',
     ('commodity', 'market'): '{0} with financial market data screens in background',
-    ('company',  'company'): '{0} facing off against {1}, corporate rivalry composition',
-    ('person',   'person'):  'split portrait of {0} and {1}, dramatic tension',
+    ('company', 'company'):  '{0} facing off against {1}, corporate rivalry composition',
+    ('person', 'person'):    'split portrait of {0} and {1}, dramatic tension',
 }
+
+# Diverse fallback scenes — rotated by hash so no two posts share the same generic image
+_GENERIC_FALLBACKS = [
+    "dramatic financial market trading floor, red and green screens, intense traders, cinematic",
+    "global economy concept, world map with financial data flows, glowing connections",
+    "Wall Street at night, NYSE building, neon lights reflecting on wet pavement",
+    "abstract market crash and recovery, crashing red charts turning green, dramatic light",
+    "central bank boardroom meeting, financial decision makers, tension in the air",
+    "digital financial network visualization, data streams, economic power concept",
+    "stock exchange opening bell ceremony, traders celebrating, confetti and screens",
+    "global trade routes, cargo ships on ocean, satellite view, economic interdependence",
+]
 
 
 def _extract_subjects(text: str) -> list[tuple[str, str]]:
@@ -494,7 +803,9 @@ def _build_scene(subjects: list[tuple[str, str]], entity, headline: str) -> str:
                 return f"dramatic portrait of {name}, intense expression, cinematic lighting"
             if e_type in ("index", "commodity"):
                 return f"dramatic visualization of {name} market movement, charts, data"
-        return "dramatic financial market scene, trading floor, global economy visualization"
+        # Rotate through diverse fallbacks based on headline hash to avoid repetition
+        idx = int(hashlib.md5(headline.encode()).hexdigest(), 16) % len(_GENERIC_FALLBACKS)
+        return _GENERIC_FALLBACKS[idx]
 
     if len(subjects) == 1:
         cat, vis = subjects[0]
