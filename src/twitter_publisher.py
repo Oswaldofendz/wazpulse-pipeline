@@ -46,7 +46,11 @@ MAX_TWEET_LEN = 280
 # ─── Auth ───────────────────────────────────────────────────────────────────
 
 def _make_clients() -> tuple[tweepy.Client, tweepy.API]:
-    """Return (v2 Client for posting, v1.1 API for media upload)."""
+    """Return (v2 Client for posting, v1.1 API for media upload).
+
+    Also runs a get_me() credential check so Railway logs show the exact
+    error if credentials are wrong or the app only has Read permissions.
+    """
     auth = tweepy.OAuth1UserHandler(
         consumer_key=config.TWITTER_API_KEY,
         consumer_secret=config.TWITTER_API_SECRET,
@@ -60,6 +64,28 @@ def _make_clients() -> tuple[tweepy.Client, tweepy.API]:
         access_token=config.TWITTER_ACCESS_TOKEN,
         access_token_secret=config.TWITTER_ACCESS_TOKEN_SECRET,
     )
+
+    # ── Credential validation ─────────────────────────────────────────────
+    # get_me() verifies OAuth 1.0a is wired correctly. If this fails:
+    #   403 Client Forbidden → app permissions are Read-only (need Read+Write
+    #       in developer portal, then REGENERATE the access token/secret)
+    #   401 Unauthorized     → wrong consumer key/secret or access token/secret
+    try:
+        me = v2_client.get_me()
+        if me and me.data:
+            log.info("twitter-pub: credentials OK — authenticated as @%s", me.data.username)
+        else:
+            log.warning("twitter-pub: get_me() returned empty data — credentials may be invalid")
+    except Exception as e:
+        log.error(
+            "twitter-pub: credential check FAILED (%s). "
+            "If 403 → app is Read-only; go to developer.twitter.com → app → "
+            "Settings → User authentication → set Read+Write, SAVE, then "
+            "regenerate Access Token+Secret and update Railway env vars.",
+            e,
+        )
+        raise
+
     return v2_client, v1_api
 
 
@@ -150,13 +176,15 @@ def run_one_cycle() -> dict:
 
     # Fetch approved posts. We over-fetch and filter in Python because
     # PostgREST can't do nested JSONB key existence checks easily.
+    # Order by created_at (guaranteed to exist) rather than approved_at
+    # (which may be missing in older DB schemas).
     res = (
         client.table("pulse_posts")
         .select(
             "id, headline, copy_twitter, card_image_url, compliance_flags, candidate_id"
         )
         .eq("status", "approved")
-        .order("approved_at", desc=False)   # oldest approved first
+        .order("created_at", desc=False)   # oldest first, safe column
         .limit(MAX_PER_CYCLE * 10)
         .execute()
     )
