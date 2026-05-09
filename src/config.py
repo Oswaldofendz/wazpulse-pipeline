@@ -21,6 +21,12 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 
+# --- TikTok Content Posting API (Bloque 8c — Photo Carousel) ---
+TIKTOK_CLIENT_KEY    = os.getenv("TIKTOK_CLIENT_KEY")
+TIKTOK_CLIENT_SECRET = os.getenv("TIKTOK_CLIENT_SECRET")
+TIKTOK_REFRESH_TOKEN = os.getenv("TIKTOK_REFRESH_TOKEN")
+TIKTOK_OPEN_ID       = os.getenv("TIKTOK_OPEN_ID")
+
 # --- Make.com webhook (Bloque 8 — Twitter publisher via Make.com free tier) ---
 # Make.com posts to X using Make's own X developer app credentials.
 # User's X API account balance ($0) is irrelevant — Make handles billing.

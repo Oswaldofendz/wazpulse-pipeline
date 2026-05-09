@@ -19,7 +19,7 @@ import signal
 import sys
 import time
 
-from . import config, rss_fetcher, editorial_generator, telegram_bot, twitter_publisher
+from . import config, rss_fetcher, editorial_generator, telegram_bot, twitter_publisher, tiktok_publisher
 from .supabase_client import count_candidates, count_sources_active
 
 logging.basicConfig(
@@ -98,13 +98,23 @@ def _tick_bloque7(cycle_n: int) -> None:
 def _tick_bloque8(cycle_n: int) -> None:
     # 1+2+3: RSS + editorial + Telegram send (existing).
     _tick_bloque7(cycle_n)
-    # 4: Twitter publisher — post approved cards.
+    # 4a: Twitter publisher — fire Make.com webhook (paused if MAKE_WEBHOOK_URL unset).
     log.info("cycle %d starting Twitter publisher step", cycle_n)
     tw = twitter_publisher.run_one_cycle()
     log.info(
         "cycle %d Twitter done — eligible=%d published=%d skipped_no_card=%d errors=%d",
         cycle_n,
         tw["eligible"], tw["published"], tw["skipped_no_card"], tw["errors"],
+    )
+    # 4c: TikTok publisher — photo carousel (requires TIKTOK_* env vars).
+    log.info("cycle %d starting TikTok publisher step", cycle_n)
+    tt = tiktok_publisher.run_one_cycle()
+    log.info(
+        "cycle %d TikTok done — eligible=%d published=%d generated_carousel=%d "
+        "skipped_no_card=%d errors=%d",
+        cycle_n,
+        tt["eligible"], tt["published"], tt["generated_carousel"],
+        tt["skipped_no_card"], tt["errors"],
     )
 
 
@@ -157,6 +167,22 @@ def main() -> None:
     cycle_n = 0
     while not _shutdown:
         cycle_n += 1
+        tick(cycle_n)
+        # Sleep in 1s slices; poll Telegram callbacks every CALLBACK_POLL_SEC
+        # so button presses are handled within ~10s (< Telegram's 30s timeout).
+        for i in range(config.CYCLE_INTERVAL_SECONDS):
+            if _shutdown:
+                break
+            if i > 0 and i % CALLBACK_POLL_SEC == 0:
+                _poll_callbacks()
+            time.sleep(1)
+
+    log.info("PulseEngine shut down cleanly after %d cycles", cycle_n)
+
+
+if __name__ == "__main__":
+    main()
+1
         tick(cycle_n)
         # Sleep in 1s slices; poll Telegram callbacks every CALLBACK_POLL_SEC
         # so button presses are handled within ~10s (< Telegram's 30s timeout).
