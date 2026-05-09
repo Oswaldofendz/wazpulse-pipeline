@@ -21,11 +21,11 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 
-# --- Twitter / X (required from Bloque 8) ---
-TWITTER_API_KEY             = os.getenv("TWITTER_API_KEY")
-TWITTER_API_SECRET          = os.getenv("TWITTER_API_SECRET")
-TWITTER_ACCESS_TOKEN        = os.getenv("TWITTER_ACCESS_TOKEN")
-TWITTER_ACCESS_TOKEN_SECRET = os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
+# --- Make.com webhook (Bloque 8 — Twitter publisher via Make.com free tier) ---
+# Make.com posts to X using Make's own X developer app credentials.
+# User's X API account balance ($0) is irrelevant — Make handles billing.
+# Get this URL from: make.com → scenario → Webhooks module → Copy address
+MAKE_WEBHOOK_URL = os.getenv("MAKE_WEBHOOK_URL")
 
 # --- Tunables ---
 CYCLE_INTERVAL_SECONDS = int(os.getenv("CYCLE_INTERVAL_SECONDS", "300"))
@@ -51,12 +51,9 @@ def assert_required_for_bloque(bloque: int) -> None:
         required["TELEGRAM_BOT_TOKEN"] = TELEGRAM_BOT_TOKEN
         required["TELEGRAM_CHAT_ID"]   = TELEGRAM_CHAT_ID
 
-    # Bloque 8 — Twitter publisher
+    # Bloque 8 — Twitter publisher (via Make.com)
     if bloque >= 8:
-        required["TWITTER_API_KEY"]             = TWITTER_API_KEY
-        required["TWITTER_API_SECRET"]          = TWITTER_API_SECRET
-        required["TWITTER_ACCESS_TOKEN"]        = TWITTER_ACCESS_TOKEN
-        required["TWITTER_ACCESS_TOKEN_SECRET"] = TWITTER_ACCESS_TOKEN_SECRET
+        required["MAKE_WEBHOOK_URL"] = MAKE_WEBHOOK_URL
 
     missing = [k for k, v in required.items() if not v]
     if missing:

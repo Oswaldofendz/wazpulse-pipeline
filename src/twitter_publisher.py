@@ -1,29 +1,33 @@
 """
-Twitter publisher — Bloque 8a.
+Twitter publisher — Bloque 8a (Make.com edition).
 
 Per cycle:
   1. Query pulse_posts WHERE status='approved' AND not yet published to Twitter.
-     We track publication inside compliance_flags.published_platforms.twitter so
-     no DB migration is needed.
+     Publication state lives in compliance_flags.published_platforms.twitter —
+     no DB migration needed.
   2. For each post (up to MAX_PER_CYCLE):
-     a. Download card image from card_image_url (Supabase Storage public URL).
-        If card_image_url is NULL, skip — we won't post cardless tweets.
-     b. Upload image to Twitter via media/upload (v1.1 API).
-     c. Post tweet via Twitter API v2 with copy_twitter text + media_id.
-     d. Patch compliance_flags with twitter publish metadata (tweet_id + timestamp).
+     a. Skip if card_image_url is NULL.
+     b. Fire Make.com webhook: { post_id, text, image_url }.
+     c. On 2xx from Make: mark compliance_flags with make_queued=True + sent_at.
+        This prevents re-queueing on the next cycle.
   3. Returns stats dict for main.py logging.
 
-Auth: OAuth 1.0a via tweepy. Keys come from env vars (config.py).
-Rate limits: Free tier allows 500 posts/month (17/day). We post ≤3/cycle × 288
-cycles/day = 864 ceiling — but only approved posts flow through, typically 1-5/day.
+Why Make.com instead of tweepy direct:
+  X API is "Pay Per Use" — posting via tweepy requires credits ($0 balance = 402).
+  Make.com has their own X developer app; when the user connects their account via
+  OAuth, Make posts on their behalf using Make's API quota. Free tier = 1,000
+  ops/month, enough for 3-5 tweets/day.
+
+Make.com scenario structure:
+  Webhook (Custom) → HTTP: Get a file (image_url) → X: Create a Tweet (text + media)
+
+Auth: none required on this side — just the webhook URL in MAKE_WEBHOOK_URL env var.
 """
 import logging
 from datetime import datetime, timezone
-from io import BytesIO
 from typing import Optional
 
 import requests
-import tweepy
 
 from . import config
 from .supabase_client import get_client
@@ -32,110 +36,77 @@ log = logging.getLogger("twitter-pub")
 
 # ─── Tunables ───────────────────────────────────────────────────────────────
 
-# Max tweets to publish per 5-min cycle. Keep low — approval flow already
-# rate-limits output to ~3-5 posts/day.
+# Max posts to send per 5-min cycle.
 MAX_PER_CYCLE = 2
 
-# Fetch timeout for downloading the card image from Supabase Storage.
-IMG_FETCH_TIMEOUT = 20
+# Timeout waiting for Make.com to acknowledge the webhook (Make responds
+# immediately with HTTP 200 before executing the scenario).
+MAKE_TIMEOUT = 15
 
-# Twitter max tweet length (hard limit).
+# Twitter hard limit.
 MAX_TWEET_LEN = 280
-
-
-# ─── Auth ───────────────────────────────────────────────────────────────────
-
-def _make_clients() -> tuple[tweepy.Client, tweepy.API]:
-    """Return (v2 Client for posting, v1.1 API for media upload).
-
-    Also runs a get_me() credential check so Railway logs show the exact
-    error if credentials are wrong or the app only has Read permissions.
-    """
-    auth = tweepy.OAuth1UserHandler(
-        consumer_key=config.TWITTER_API_KEY,
-        consumer_secret=config.TWITTER_API_SECRET,
-        access_token=config.TWITTER_ACCESS_TOKEN,
-        access_token_secret=config.TWITTER_ACCESS_TOKEN_SECRET,
-    )
-    v1_api = tweepy.API(auth, wait_on_rate_limit=False)
-    v2_client = tweepy.Client(
-        consumer_key=config.TWITTER_API_KEY,
-        consumer_secret=config.TWITTER_API_SECRET,
-        access_token=config.TWITTER_ACCESS_TOKEN,
-        access_token_secret=config.TWITTER_ACCESS_TOKEN_SECRET,
-    )
-
-    # ── Credential validation ─────────────────────────────────────────────
-    # get_me() verifies OAuth 1.0a is wired correctly. If this fails:
-    #   403 Client Forbidden → app permissions are Read-only (need Read+Write
-    #       in developer portal, then REGENERATE the access token/secret)
-    #   401 Unauthorized     → wrong consumer key/secret or access token/secret
-    try:
-        me = v2_client.get_me()
-        if me and me.data:
-            log.info("twitter-pub: credentials OK — authenticated as @%s", me.data.username)
-        else:
-            log.warning("twitter-pub: get_me() returned empty data — credentials may be invalid")
-    except Exception as e:
-        log.error(
-            "twitter-pub: credential check FAILED (%s). "
-            "If 403 → app is Read-only; go to developer.twitter.com → app → "
-            "Settings → User authentication → set Read+Write, SAVE, then "
-            "regenerate Access Token+Secret and update Railway env vars.",
-            e,
-        )
-        raise
-
-    return v2_client, v1_api
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
 def _already_published(post: dict) -> bool:
-    """True if this post has already been sent to Twitter."""
-    flags = post.get("compliance_flags") or {}
+    """True if this post has already been sent (or queued) to Twitter."""
+    flags     = post.get("compliance_flags") or {}
     platforms = flags.get("published_platforms") or {}
     return bool(platforms.get("twitter"))
-
-
-def _fetch_image(url: str) -> Optional[bytes]:
-    """Download card image bytes from Supabase Storage public URL."""
-    try:
-        r = requests.get(url, timeout=IMG_FETCH_TIMEOUT)
-        r.raise_for_status()
-        return r.content
-    except Exception as e:
-        log.warning("  image fetch failed url=%s err=%s", url, e)
-        return None
-
-
-def _upload_media(v1_api: tweepy.API, img_bytes: bytes) -> Optional[int]:
-    """Upload image to Twitter, return media_id or None on failure."""
-    try:
-        media = v1_api.media_upload(
-            filename="wacapital_card.png",
-            file=BytesIO(img_bytes),
-        )
-        return media.media_id
-    except Exception as e:
-        log.warning("  media upload failed: %s", e)
-        return None
 
 
 def _build_tweet_text(post: dict) -> str:
     """Use copy_twitter if available, fall back to headline."""
     text = (post.get("copy_twitter") or post.get("headline") or "").strip()
-    # Ensure within hard limit
     if len(text) > MAX_TWEET_LEN:
         text = text[:MAX_TWEET_LEN - 1] + "…"
     return text
 
 
-def _mark_published(post_id, tweet_id: str) -> None:
-    """Patch compliance_flags.published_platforms.twitter with metadata."""
+def _fire_make_webhook(
+    tweet_text: str,
+    image_url: Optional[str],
+    post_id: str,
+) -> bool:
+    """POST to Make.com webhook. Returns True on HTTP 200."""
+    url = config.MAKE_WEBHOOK_URL
+    if not url:
+        log.error("  MAKE_WEBHOOK_URL not configured")
+        return False
+
+    payload = {
+        "post_id":   str(post_id),
+        "text":      tweet_text,
+        "image_url": image_url or "",
+    }
+    try:
+        r = requests.post(url, json=payload, timeout=MAKE_TIMEOUT)
+        if r.status_code == 200:
+            log.info(
+                "  ✅ Make.com queued post=%s text=%.60s…",
+                post_id, tweet_text,
+            )
+            return True
+        else:
+            log.warning(
+                "  Make.com returned %s for post=%s body=%s",
+                r.status_code, post_id, r.text[:200],
+            )
+            return False
+    except Exception as e:
+        log.error("  Make.com webhook error post=%s: %s", post_id, e)
+        return False
+
+
+def _mark_queued(post_id) -> None:
+    """
+    Patch compliance_flags.published_platforms.twitter = {make_queued: true, sent_at: ...}.
+    This truthy value prevents _already_published() from re-queuing the post
+    while Make.com processes it.
+    """
     client = get_client()
     try:
-        # Fetch current flags
         res = (
             client.table("pulse_posts")
             .select("compliance_flags")
@@ -143,19 +114,19 @@ def _mark_published(post_id, tweet_id: str) -> None:
             .limit(1)
             .execute()
         )
-        row = (res.data or [{}])[0]
-        flags = dict(row.get("compliance_flags") or {})
+        row       = (res.data or [{}])[0]
+        flags     = dict(row.get("compliance_flags") or {})
         platforms = dict(flags.get("published_platforms") or {})
         platforms["twitter"] = {
-            "tweet_id":    tweet_id,
-            "published_at": datetime.now(timezone.utc).isoformat(),
+            "make_queued": True,
+            "sent_at":     datetime.now(timezone.utc).isoformat(),
         }
         flags["published_platforms"] = platforms
         client.table("pulse_posts").update(
             {"compliance_flags": flags}
         ).eq("id", post_id).execute()
     except Exception as e:
-        log.error("  failed to mark post %s as twitter-published: %s", post_id, e)
+        log.error("  failed to mark post %s as queued: %s", post_id, e)
 
 
 # ─── Main cycle ─────────────────────────────────────────────────────────────
@@ -163,34 +134,23 @@ def _mark_published(post_id, tweet_id: str) -> None:
 def run_one_cycle() -> dict:
     stats = {"eligible": 0, "published": 0, "skipped_no_card": 0, "errors": 0}
 
-    if not all([
-        config.TWITTER_API_KEY,
-        config.TWITTER_API_SECRET,
-        config.TWITTER_ACCESS_TOKEN,
-        config.TWITTER_ACCESS_TOKEN_SECRET,
-    ]):
-        log.warning("Twitter credentials not configured — skipping cycle")
+    if not config.MAKE_WEBHOOK_URL:
+        log.warning("twitter-pub: MAKE_WEBHOOK_URL not set — skipping cycle")
         return stats
 
     client = get_client()
 
-    # Fetch approved posts. We over-fetch and filter in Python because
-    # PostgREST can't do nested JSONB key existence checks easily.
-    # Order by created_at (guaranteed to exist) rather than approved_at
-    # (which may be missing in older DB schemas).
     res = (
         client.table("pulse_posts")
         .select(
-            "id, headline, copy_twitter, card_image_url, compliance_flags, candidate_id"
+            "id, headline, copy_twitter, card_image_url, compliance_flags"
         )
         .eq("status", "approved")
-        .order("created_at", desc=False)   # oldest first, safe column
+        .order("created_at", desc=False)
         .limit(MAX_PER_CYCLE * 10)
         .execute()
     )
-    rows = res.data or []
-
-    # Filter to only unpublished
+    rows    = res.data or []
     pending = [r for r in rows if not _already_published(r)]
     stats["eligible"] = len(pending)
 
@@ -198,16 +158,8 @@ def run_one_cycle() -> dict:
         log.info("twitter-pub: no approved posts pending publication")
         return stats
 
-    # Build tweepy clients once (shared across posts in this cycle)
-    try:
-        v2_client, v1_api = _make_clients()
-    except Exception as e:
-        log.error("twitter-pub: failed to init tweepy clients: %s", e)
-        stats["errors"] += 1
-        return stats
-
     for post in pending[:MAX_PER_CYCLE]:
-        post_id = post["id"]
+        post_id  = post["id"]
         card_url = post.get("card_image_url")
 
         if not card_url:
@@ -215,42 +167,14 @@ def run_one_cycle() -> dict:
             stats["skipped_no_card"] += 1
             continue
 
-        # 1. Download card
-        img_bytes = _fetch_image(card_url)
-        if not img_bytes:
-            stats["errors"] += 1
-            continue
-
-        # 2. Upload to Twitter media (best-effort — free tier may block v1.1)
-        media_id = _upload_media(v1_api, img_bytes)
-        if not media_id:
-            log.warning(
-                "  post %s media upload failed — will attempt text-only tweet", post_id
-            )
-
-        # 3. Post tweet (with card if media_id, else text-only)
         tweet_text = _build_tweet_text(post)
-        try:
-            if media_id:
-                resp = v2_client.create_tweet(
-                    text=tweet_text,
-                    media_ids=[media_id],
-                )
-            else:
-                resp = v2_client.create_tweet(text=tweet_text)
-            tweet_id = str(resp.data["id"])
-            mode = "with card" if media_id else "text-only"
-            log.info(
-                "  ✅ tweeted (%s) post=%s tweet_id=%s text=%.60s…",
-                mode, post_id, tweet_id, tweet_text,
-            )
-        except Exception as e:
-            log.error("  create_tweet failed post=%s: %s", post_id, e)
+
+        ok = _fire_make_webhook(tweet_text, card_url, post_id)
+        if not ok:
             stats["errors"] += 1
             continue
 
-        # 4. Mark published
-        _mark_published(post_id, tweet_id)
+        _mark_queued(post_id)
         stats["published"] += 1
 
     return stats
