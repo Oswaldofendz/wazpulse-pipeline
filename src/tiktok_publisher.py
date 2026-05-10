@@ -204,10 +204,7 @@ def _post_carousel(
         "post_info": {
             "title":           caption,
             "privacy_level":   "PUBLIC_TO_EVERYONE",
-            "disable_duet":    False,
             "disable_comment": False,
-            "disable_stitch":  False,
-            "auto_add_music":  True,
         },
         "source_info": {
             "source":             "PULL_FROM_URL",
