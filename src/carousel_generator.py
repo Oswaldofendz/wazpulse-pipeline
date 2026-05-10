@@ -416,11 +416,11 @@ def generate_carousel(post: dict) -> list[bytes]:
     Returns empty list on total failure.
     """
     # angle_hook, angle_reasoning live in metadata JSONB
-    meta      = post.get("metadata") or {}
+
     headline  = (post.get("headline")           or "Sin título").strip()
-    hook      = (meta.get("angle_hook")         or headline).strip()
-    angle     = (meta.get("angle_reasoning")    or "Análisis en curso.").strip()
-    reasoning = (meta.get("angle_reasoning")    or "Este evento podría impactar los mercados.").strip()
+    hook      = (post.get("angle_hook")      or headline).strip()
+
+
     semaforo  = post.get("semaforo", "neutral")
     accent    = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
 

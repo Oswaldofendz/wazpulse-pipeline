@@ -161,10 +161,10 @@ def _build_caption(post: dict) -> str:
     Uses copy_tiktok if available, falls back to hook -> headline.
     angle_hook and angle_reasoning live inside the metadata JSONB column.
     """
-    meta     = post.get("metadata") or {}
-    copy     = (post.get("copy_tiktok")          or "").strip()
-    hook     = (meta.get("angle_hook")            or "").strip()
-    angle    = (meta.get("angle_reasoning")       or "").strip()
+
+    copy     = (post.get("copy_tiktok")    or "").strip()
+    hook     = (post.get("angle_hook")     or "").strip()
+    angle    = (post.get("angle_reasoning") or "").strip()
 
     # Primary copy
     if copy:
@@ -363,7 +363,7 @@ def run_one_cycle() -> dict:
     res = (
         client.table("pulse_posts")
         .select(
-            "id, headline, copy_tiktok, metadata, "
+            "id, headline, copy_tiktok, angle_hook, angle_reasoning, "
             "card_image_url, compliance_flags, semaforo"
         )
         .eq("status", "approved")

@@ -134,7 +134,7 @@ def _mark_queued(post_id) -> None:
 def run_one_cycle() -> dict:
     stats = {"eligible": 0, "published": 0, "skipped_no_card": 0, "errors": 0}
 
-    if not config.MAKE_WEBHOOK_URL:
+    if not config.MAKE_WEBHOOK_URL or not config.MAKE_WEBHOOK_URL.startswith("http"):
         log.warning("twitter-pub: MAKE_WEBHOOK_URL not set — skipping cycle")
         return stats
 
