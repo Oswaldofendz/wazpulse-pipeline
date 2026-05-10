@@ -52,9 +52,10 @@ MAX_PHOTO_SLIDES = 35        # TikTok hard limit per carousel
 
 # ─── TikTok API constants ────────────────────────────────────────────────────
 
-TIKTOK_TOKEN_URL   = "https://open.tiktokapis.com/v2/oauth/token/"
-TIKTOK_PUBLISH_URL = "https://open.tiktokapis.com/v2/post/publish/content/init/"
-TIKTOK_STATUS_URL  = "https://open.tiktokapis.com/v2/post/publish/status/fetch/"
+TIKTOK_TOKEN_URL       = "https://open.tiktokapis.com/v2/oauth/token/"
+TIKTOK_PUBLISH_URL     = "https://open.tiktokapis.com/v2/post/publish/content/init/"
+TIKTOK_STATUS_URL      = "https://open.tiktokapis.com/v2/post/publish/status/fetch/"
+TIKTOK_CREATOR_INFO_URL = "https://open.tiktokapis.com/v2/post/publish/creator_info/query/"
 
 # Module-level access token cache (refreshed per cycle as needed)
 _cached_access_token: Optional[str] = None
@@ -134,6 +135,35 @@ def _get_token() -> Optional[str]:
     return _cached_access_token
 
 
+def _query_creator_info(access_token: str) -> Optional[dict]:
+    """
+    POST to creator_info/query to learn allowed privacy_level_options.
+    Logs full response so we can debug invalid_params issues.
+    Returns data dict on success, None on failure.
+    """
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type":  "application/json; charset=UTF-8",
+    }
+    try:
+        r = requests.post(TIKTOK_CREATOR_INFO_URL, headers=headers, timeout=15)
+        body = r.json()
+    except Exception as e:
+        log.error("tiktok-pub: creator_info request error: %s", e)
+        return None
+
+    log.info(
+        "tiktok-pub: creator_info status=%s body=%s",
+        r.status_code, body,
+    )
+    if r.status_code == 200:
+        err_code = (body.get("error") or {}).get("code", "")
+        if err_code in ("ok", ""):
+            return body.get("data") or {}
+    log.error("tiktok-pub: creator_info failed status=%s", r.status_code)
+    return None
+
+
 # ─── Guard helpers ───────────────────────────────────────────────────────────
 
 def _already_published(post: dict) -> bool:
@@ -191,6 +221,7 @@ def _post_carousel(
     open_id: str,
     photo_urls: list[str],
     caption: str,
+    privacy_level: str = "SELF_ONLY",
 ) -> Optional[str]:
     """
     POST carousel to TikTok Content Posting API.
@@ -200,10 +231,17 @@ def _post_carousel(
         "Authorization": f"Bearer {access_token}",
         "Content-Type":  "application/json; charset=UTF-8",
     }
+
+    # Ensure title is non-empty after stripping
+    title = caption.strip()
+    if not title:
+        title = "#WaCapital #crypto #finanzas"
+        log.warning("tiktok-pub: caption was empty — using fallback hashtags")
+
     payload = {
         "post_info": {
-            "title":           caption,
-            "privacy_level":   "SELF_ONLY",
+            "title":           title,
+            "privacy_level":   privacy_level,
             "disable_comment": False,
         },
         "source_info": {
@@ -214,6 +252,13 @@ def _post_carousel(
         "post_mode":  "DIRECT_POST",
         "media_type": "PHOTO",
     }
+
+    log.info(
+        "tiktok-pub: payload post_info=%s photo_count=%d title_len=%d",
+        {k: v for k, v in payload["post_info"].items() if k != "title"},
+        len(photo_urls),
+        len(title),
+    )
 
     try:
         r = requests.post(
@@ -383,6 +428,16 @@ def run_one_cycle() -> dict:
         stats["errors"] += 1
         return stats
 
+    # Query creator info to get allowed privacy levels and settings
+    creator_info = _query_creator_info(access_token)
+    if creator_info:
+        privacy_options = creator_info.get("privacy_level_options") or ["SELF_ONLY"]
+        privacy_level = privacy_options[0]
+        log.info("tiktok-pub: creator_info OK — using privacy_level=%s", privacy_level)
+    else:
+        privacy_level = "SELF_ONLY"
+        log.warning("tiktok-pub: creator_info failed — defaulting to SELF_ONLY")
+
     open_id = config.TIKTOK_OPEN_ID
 
     for post in pending[:MAX_PER_CYCLE]:
@@ -429,7 +484,7 @@ def run_one_cycle() -> dict:
         )
 
         # 3. Post to TikTok
-        publish_id = _post_carousel(access_token, open_id, carousel_urls, caption)
+        publish_id = _post_carousel(access_token, open_id, carousel_urls, caption, privacy_level)
         if not publish_id:
             stats["errors"] += 1
             continue
