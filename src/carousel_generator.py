@@ -242,7 +242,7 @@ def _slide1_hook(post: dict) -> bytes:
               font=_regular(26), fill=GRAY_500)
 
     buf = BytesIO()
-    img.save(buf, "PNG", optimize=True)
+    img.save(buf, "JPEG", quality=90)
     return buf.getvalue()
 
 
@@ -278,7 +278,7 @@ def _slide_text(slide_num: int, label: str, title: str, body: str,
     _draw_text_block(draw, b_lines, b_font, GRAY_300, y, cx, 20)
 
     buf = BytesIO()
-    img.save(buf, "PNG", optimize=True)
+    img.save(buf, "JPEG", quality=90)
     return buf.getvalue()
 
 
@@ -337,7 +337,7 @@ def _slide6_semaforo(post: dict) -> bytes:
     _draw_text_block(draw, h_lines, h_font, GRAY_300, y, cx, 16)
 
     buf = BytesIO()
-    img.save(buf, "PNG", optimize=True)
+    img.save(buf, "JPEG", quality=90)
     return buf.getvalue()
 
 
@@ -403,7 +403,7 @@ def _slide7_cta(post: dict) -> bytes:
     draw.text((cx - aw//2, y2), arr, font=arr_f, fill=GRAY_500)
 
     buf = BytesIO()
-    img.save(buf, "PNG", optimize=True)
+    img.save(buf, "JPEG", quality=90)
     return buf.getvalue()
 
 
@@ -454,7 +454,7 @@ def generate_carousel(post: dict) -> list[bytes]:
             try:
                 img = Image.new("RGB", (W, H), BG)
                 buf = BytesIO()
-                img.save(buf, "PNG")
+                img.save(buf, "JPEG", quality=90)
                 slides.append(buf.getvalue())
             except Exception:
                 pass
@@ -476,12 +476,12 @@ def upload_carousel_to_supabase(post_id: str, slides: list[bytes]) -> list[str]:
     urls   = []
 
     for i, slide_bytes in enumerate(slides):
-        slide_path = f"{post_id}/slide_{i+1:02d}.png"
+        slide_path = f"{post_id}/slide_{i+1:02d}.jpg"
         try:
             client.storage.from_("carousel-slides").upload(
                 slide_path,
                 slide_bytes,
-                {"content-type": "image/png", "x-upsert": "true"},
+                {"content-type": "image/jpeg", "x-upsert": "true"},
             )
             public_url = (
                 f"{config.SUPABASE_URL}/storage/v1/object/public/carousel-slides/{slide_path}"
@@ -492,4 +492,4 @@ def upload_carousel_to_supabase(post_id: str, slides: list[bytes]) -> list[str]:
             log.error("  failed to upload slide %d: %s", i + 1, e)
 
     log.info("carousel: %d/%d slides uploaded for post %s", len(urls), len(slides), post_id)
-    return urls
+    return

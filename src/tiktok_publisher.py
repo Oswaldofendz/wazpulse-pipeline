@@ -227,9 +227,9 @@ def _post_carousel(
     POST carousel to TikTok Content Posting API.
     Returns publish_id on success, None on failure.
     """
+    # Let requests set Content-Type automatically (json= param handles it)
     headers = {
         "Authorization": f"Bearer {access_token}",
-        "Content-Type":  "application/json; charset=UTF-8",
     }
 
     # Ensure title is non-empty after stripping
@@ -238,15 +238,18 @@ def _post_carousel(
         title = "#WaCapital #crypto #finanzas"
         log.warning("tiktok-pub: caption was empty — using fallback hashtags")
 
+    # For PHOTO posts: caption goes in "description", "title" is a short label only
+    # (TikTok naming is inverted vs VIDEO posts where "title" is the caption)
+    short_title = title[:90].split("\n")[0]  # first line, max 90 chars
     payload = {
         "post_info": {
-            "title":           title,
-            "privacy_level":   privacy_level,
-            "disable_comment": False,
+            "title":         short_title,   # short label (≤90 chars)
+            "description":   title,          # full caption for PHOTO posts
+            "privacy_level": privacy_level,
         },
         "source_info": {
             "source":             "PULL_FROM_URL",
-            "photo_cover_index":  1,
+            "photo_cover_index":  0,         # 0-based; first slide as cover
             "photo_images":       photo_urls[:MAX_PHOTO_SLIDES],
         },
         "post_mode":  "DIRECT_POST",
@@ -254,10 +257,11 @@ def _post_carousel(
     }
 
     log.info(
-        "tiktok-pub: payload post_info=%s photo_count=%d title_len=%d",
-        {k: v for k, v in payload["post_info"].items() if k != "title"},
+        "tiktok-pub: payload privacy=%s photo_count=%d title_len=%d title_preview=%.80r",
+        privacy_level,
         len(photo_urls),
         len(title),
+        title[:80],
     )
 
     try:
@@ -446,64 +450,4 @@ def run_one_cycle() -> dict:
         # 1. Get or generate carousel slides
         carousel_urls = _get_carousel_urls(post)
 
-        if not carousel_urls:
-            # Generate slides + upload to Supabase Storage
-            if not post.get("card_image_url"):
-                log.info("tiktok-pub: post=%s has no card_image_url — skipping", post_id)
-                stats["skipped_no_card"] += 1
-                continue
-
-            log.info("tiktok-pub: generating carousel for post=%s", post_id)
-            try:
-                slides = generate_carousel(post)
-                carousel_urls = upload_carousel_to_supabase(post_id, slides)
-                _save_carousel_urls(post_id, carousel_urls)
-                stats["generated_carousel"] += 1
-                log.info(
-                    "tiktok-pub: carousel generated — %d slides for post=%s",
-                    len(carousel_urls), post_id,
-                )
-            except Exception as e:
-                log.error(
-                    "tiktok-pub: carousel generation failed post=%s: %s",
-                    post_id, e,
-                )
-                stats["errors"] += 1
-                continue
-
-        if not carousel_urls:
-            log.error("tiktok-pub: empty carousel_urls for post=%s", post_id)
-            stats["errors"] += 1
-            continue
-
-        # 2. Build caption
-        caption = _build_caption(post)
-        log.info(
-            "tiktok-pub: posting %d slides to TikTok post=%s",
-            len(carousel_urls), post_id,
-        )
-
-        # 3. Post to TikTok
-        publish_id = _post_carousel(access_token, open_id, carousel_urls, caption, privacy_level)
-        if not publish_id:
-            stats["errors"] += 1
-            continue
-
-        # 4. Poll for status (non-blocking — mark queued even if timeout)
-        final_status = _poll_publish_status(access_token, publish_id)
-        log.info(
-            "tiktok-pub: post=%s publish_id=%s final_status=%s",
-            post_id, publish_id, final_status,
-        )
-
-        # 5. Mark in DB regardless of status (publish_id proves it was sent)
-        _mark_published(post_id, publish_id, final_status)
-
-        if final_status in ("PUBLISH_COMPLETE", "TIMEOUT"):
-            # TIMEOUT means still processing -- not a failure
-            stats["published"] += 1
-        else:
-            # FAILED or CANCELLED
-            stats["errors"] += 1
-
-    return stats
+        if
