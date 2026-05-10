@@ -203,7 +203,7 @@ def _post_carousel(
     payload = {
         "post_info": {
             "title":           caption,
-            "privacy_level":   "PUBLIC_TO_EVERYONE",
+            "privacy_level":   "SELF_ONLY",
             "disable_comment": False,
         },
         "source_info": {
