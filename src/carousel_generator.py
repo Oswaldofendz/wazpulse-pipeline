@@ -415,12 +415,12 @@ def generate_carousel(post: dict) -> list[bytes]:
     Returns list of PNG bytes, one per slide.
     Returns empty list on total failure.
     """
-    # angle_hook, angle_reasoning live in metadata JSONB
-
-    headline  = (post.get("headline")           or "Sin título").strip()
-    hook      = (post.get("angle_hook")      or headline).strip()
-
-
+    # angle_hook/angle_reasoning are in compliance_flags JSONB
+    flags     = post.get("compliance_flags") or {}
+    headline  = (post.get("headline")                      or "Sin titulo").strip()
+    hook      = (flags.get("angle_hook")                   or headline).strip()
+    angle     = (flags.get("angle_reasoning")              or "Analisis en curso.").strip()
+    reasoning = (flags.get("angle_reasoning")              or "Este evento podria impactar los mercados.").strip()
     semaforo  = post.get("semaforo", "neutral")
     accent    = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
 

@@ -162,9 +162,10 @@ def _build_caption(post: dict) -> str:
     angle_hook and angle_reasoning live inside the metadata JSONB column.
     """
 
-    copy     = (post.get("copy_tiktok")    or "").strip()
-    hook     = (post.get("angle_hook")     or "").strip()
-    angle    = (post.get("angle_reasoning") or "").strip()
+    flags    = post.get("compliance_flags") or {}
+    copy     = (post.get("copy_tiktok")       or "").strip()
+    hook     = (flags.get("angle_hook")        or "").strip()
+    angle    = (flags.get("angle_reasoning")   or "").strip()
 
     # Primary copy
     if copy:
@@ -363,8 +364,7 @@ def run_one_cycle() -> dict:
     res = (
         client.table("pulse_posts")
         .select(
-            "id, headline, copy_tiktok, angle_hook, angle_reasoning, "
-            "card_image_url, compliance_flags, semaforo"
+            "id, headline, copy_tiktok, card_image_url, compliance_flags, semaforo"
         )
         .eq("status", "approved")
         .order("created_at", desc=False)
