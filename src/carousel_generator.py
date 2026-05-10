@@ -415,10 +415,12 @@ def generate_carousel(post: dict) -> list[bytes]:
     Returns list of PNG bytes, one per slide.
     Returns empty list on total failure.
     """
-    headline  = (post.get("headline")  or "Sin título").strip()
-    hook      = (post.get("hook")      or headline).strip()
-    angle     = (post.get("angle")     or "Análisis en curso.").strip()
-    reasoning = (post.get("reasoning") or "Este evento podría impactar los mercados.").strip()
+    # angle_hook, angle_reasoning live in metadata JSONB
+    meta      = post.get("metadata") or {}
+    headline  = (post.get("headline")           or "Sin título").strip()
+    hook      = (meta.get("angle_hook")         or headline).strip()
+    angle     = (meta.get("angle_reasoning")    or "Análisis en curso.").strip()
+    reasoning = (meta.get("angle_reasoning")    or "Este evento podría impactar los mercados.").strip()
     semaforo  = post.get("semaforo", "neutral")
     accent    = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
 
@@ -485,8 +487,9 @@ def upload_carousel_to_supabase(post_id: str, slides: list[bytes]) -> list[str]:
                 f"{config.SUPABASE_URL}/storage/v1/object/public/carousel-slides/{path}"
             )
             urls.append(public_url)
-            log.info("  uploaded slide %d → %s", i + 1, path)
+            log.info("  uploaded slide %d/%d: %s", idx + 1, len(slides), path)
         except Exception as e:
-            log.error("  failed to upload slide %d: %s", i + 1, e)
+            log.error("  failed to upload slide %d: %s", idx + 1, e)
 
+    log.info("carousel: %d/%d slides uploaded for post %s", len(urls), len(slides), post_id)
     return urls

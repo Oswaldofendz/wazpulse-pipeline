@@ -156,13 +156,15 @@ STATIC_HASHTAGS = "#WaCapital #crypto #mercados #finanzas #bitcoin #inversiones"
 
 def _build_caption(post: dict) -> str:
     """
-    Build TikTok caption (≤2200 chars).
-    Structure: hook ↵↵ angle ↵↵ hashtags
-    Uses copy_tiktok if available, falls back to hook → headline.
+    Build TikTok caption (<=2200 chars).
+    Structure: hook + angle + hashtags.
+    Uses copy_tiktok if available, falls back to hook -> headline.
+    angle_hook and angle_reasoning live inside the metadata JSONB column.
     """
-    copy   = (post.get("copy_tiktok") or "").strip()
-    hook   = (post.get("angle_hook")  or "").strip()
-    angle  = (post.get("angle")       or "").strip()
+    meta     = post.get("metadata") or {}
+    copy     = (post.get("copy_tiktok")          or "").strip()
+    hook     = (meta.get("angle_hook")            or "").strip()
+    angle    = (meta.get("angle_reasoning")       or "").strip()
 
     # Primary copy
     if copy:
@@ -173,7 +175,8 @@ def _build_caption(post: dict) -> str:
         body = (post.get("headline") or "").strip()
 
     # Append editorial angle as context if fits
-    if angle and len(body) + len(angle) + 4 < MAX_CAPTION_LEN - len(STATIC_HASHTAGS) - 10:
+    budget = MAX_CAPTION_LEN - len(STATIC_HASHTAGS) - 4
+    if angle and len(body) + len(angle) + 2 < budget:
         body = f"{body}\n\n{angle}"
 
     caption = f"{body}\n\n{STATIC_HASHTAGS}"
@@ -360,7 +363,7 @@ def run_one_cycle() -> dict:
     res = (
         client.table("pulse_posts")
         .select(
-            "id, headline, angle, angle_hook, copy_tiktok, "
+            "id, headline, copy_tiktok, metadata, "
             "card_image_url, compliance_flags, semaforo"
         )
         .eq("status", "approved")
@@ -445,7 +448,7 @@ def run_one_cycle() -> dict:
         _mark_published(post_id, publish_id, final_status)
 
         if final_status in ("PUBLISH_COMPLETE", "TIMEOUT"):
-            # TIMEOUT means still processing — not a failure
+            # TIMEOUT means still processing -- not a failure
             stats["published"] += 1
         else:
             # FAILED or CANCELLED
