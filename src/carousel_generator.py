@@ -476,20 +476,20 @@ def upload_carousel_to_supabase(post_id: str, slides: list[bytes]) -> list[str]:
     urls   = []
 
     for i, slide_bytes in enumerate(slides):
-        path = f"{post_id}/slide_{i+1:02d}.png"
+        slide_path = f"{post_id}/slide_{i+1:02d}.png"
         try:
             client.storage.from_("carousel-slides").upload(
-                path,
+                slide_path,
                 slide_bytes,
-                {"content-type": "image/png", "upsert": "true"},
+                {"content-type": "image/png", "x-upsert": "true"},
             )
             public_url = (
-                f"{config.SUPABASE_URL}/storage/v1/object/public/carousel-slides/{path}"
+                f"{config.SUPABASE_URL}/storage/v1/object/public/carousel-slides/{slide_path}"
             )
             urls.append(public_url)
-            log.info("  uploaded slide %d/%d: %s", idx + 1, len(slides), path)
+            log.info("  uploaded slide %d/%d: %s", i + 1, len(slides), slide_path)
         except Exception as e:
-            log.error("  failed to upload slide %d: %s", idx + 1, e)
+            log.error("  failed to upload slide %d: %s", i + 1, e)
 
     log.info("carousel: %d/%d slides uploaded for post %s", len(urls), len(slides), post_id)
     return urls
