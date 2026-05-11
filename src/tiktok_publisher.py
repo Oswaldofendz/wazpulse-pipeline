@@ -413,10 +413,20 @@ def run_one_cycle() -> dict:
         return stats
 
     creator_info = _query_creator_info(access_token)
+    # Sandbox / unaudited apps can ONLY post with privacy_level=SELF_ONLY.
+    # Even when TikTok returns PUBLIC_TO_EVERYONE in privacy_level_options,
+    # the publish call is rejected with error code:
+    #   "unaudited_client_can_only_post_to_private_accounts"
+    # Once the app is audited (Production), prefer PUBLIC_TO_EVERYONE here.
     if creator_info:
-        privacy_options = creator_info.get("privacy_level_options") or ["SELF_ONLY"]
-        privacy_level   = privacy_options[0]
-        log.info("tiktok-pub: creator_info OK -- using privacy_level=%s", privacy_level)
+        privacy_options = creator_info.get("privacy_level_options") or []
+        privacy_level   = "SELF_ONLY" if "SELF_ONLY" in privacy_options else (
+            privacy_options[0] if privacy_options else "SELF_ONLY"
+        )
+        log.info(
+            "tiktok-pub: creator_info OK options=%s -- using privacy_level=%s",
+            privacy_options, privacy_level,
+        )
     else:
         privacy_level = "SELF_ONLY"
         log.warning("tiktok-pub: creator_info failed -- defaulting to SELF_ONLY")
