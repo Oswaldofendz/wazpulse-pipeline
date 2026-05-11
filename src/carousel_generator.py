@@ -492,4 +492,4 @@ def upload_carousel_to_supabase(post_id: str, slides: list[bytes]) -> list[str]:
             log.error("  failed to upload slide %d: %s", i + 1, e)
 
     log.info("carousel: %d/%d slides uploaded for post %s", len(urls), len(slides), post_id)
-    return
+    return urls
