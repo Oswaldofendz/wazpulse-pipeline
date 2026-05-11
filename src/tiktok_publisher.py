@@ -167,9 +167,33 @@ def _already_published(post: dict) -> bool:
     return bool(platforms.get("tiktok"))
 
 
+def _rewrite_to_proxy(url: str) -> str:
+    """
+    Translate a direct Supabase Storage URL into a wastake-backend proxy URL.
+
+    TikTok rejects PULL_FROM_URL with `url_ownership_unverified` for domains
+    we cannot verify (supabase.co). The backend proxies the same bytes from
+    a domain we DO own (railway.app via wastake-backend), which is verified
+    in the TikTok Developer Portal.
+
+    Input  (Supabase direct):
+      https://<proj>.supabase.co/storage/v1/object/public/carousel-slides/1773/slide_01.jpg
+    Output (backend proxy):
+      <WASTAKE_API_URL>/api/carousel-img/1773/slide_01.jpg
+
+    URLs that don't match the expected Supabase pattern are returned as-is.
+    """
+    marker = "/storage/v1/object/public/carousel-slides/"
+    if marker not in url:
+        return url
+    suffix = url.split(marker, 1)[1]  # e.g. "1773/slide_01.jpg"
+    return f"{config.WASTAKE_API_URL.rstrip('/')}/api/carousel-img/{suffix}"
+
+
 def _get_carousel_urls(post: dict) -> list[str]:
-    flags = post.get("compliance_flags") or {}
-    return flags.get("carousel_urls") or []
+    flags    = post.get("compliance_flags") or {}
+    raw_urls = flags.get("carousel_urls") or []
+    return [_rewrite_to_proxy(u) for u in raw_urls]
 
 
 # Caption builder
