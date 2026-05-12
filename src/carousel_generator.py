@@ -1,21 +1,27 @@
 """
 Carousel generator — Bloque 6c-CAROUSEL.
 
-Generates 7 slides (1080×1920, 9:16 vertical) for TikTok photo carousel.
+Generates 6 slides (1080×1920, 9:16 vertical) for TikTok photo carousel.
 Algorithm research (2026): 5-10 slides optimal for completion rate signal;
-7 is the sweet spot for finance/news — delivers value without drop-off.
+6 keeps it punchy without redundancy.
 
 Slide structure:
   1. HOOK      — card hero image (full-bleed) + stop-scroll headline
-  2. CONTEXTO  — ¿Qué pasó? (headline expanded)
-  3. DATO      — El número/dato clave (hook text)
-  4. ÁNGULO    — Análisis editorial (angle)
-  5. IMPACTO   — ¿Cómo te afecta? (reasoning)
-  6. SEMÁFORO  — Señal de mercado con color
-  7. CTA       — Síguenos @WaCapital + activa 🔔
+  2. CONTEXTO  — ¿Qué pasó? (headline expanded) — hero as background
+  3. DATO      — El número/dato clave (angle_hook) — hero as background
+  4. ÁNGULO    — Análisis editorial (angle_reasoning) — hero as background
+  5. SEMÁFORO  — Señal de mercado con color — hero as background
+  6. CTA       — Síguenos @WaCapital + activa 🔔 — clean brand slide
 
-Output: list[bytes] (PNG), one per slide.
-Stored in Supabase Storage under carousels/{post_id}/slide_{n}.png
+All content slides use the card hero image as background (darkened), so the
+visual identity is consistent across the whole carousel. Previous version
+had blank dark backgrounds for slides 2-5 which felt sparse.
+
+Removed previous slide 5 ("IMPACTO" / "El impacto real") because it used the
+same `angle_reasoning` field as slide 4 — content was literally duplicated.
+
+Output: list[bytes] (JPEG), one per slide.
+Stored in Supabase Storage under carousel-slides/{post_id}/slide_NN.jpg
 URLs tracked in compliance_flags.carousel_urls (no DB migration needed).
 """
 import logging
@@ -84,6 +90,25 @@ def _regular(size): return _font(_REGULAR, _REGULAR_SYS, size)
 
 # ─── Drawing helpers ─────────────────────────────────────────────────────────
 
+def _load_hero(url: Optional[str]) -> Optional[Image.Image]:
+    """Download the card image and crop/scale it to fill 1080×1920 (9:16)."""
+    if not url:
+        return None
+    try:
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        img = Image.open(BytesIO(r.content)).convert("RGB")
+        # Scale to fill width, then crop vertically centered
+        ratio = W / img.width
+        new_h = int(img.height * ratio)
+        img = img.resize((W, max(new_h, H)), Image.LANCZOS)
+        top = max(0, (img.height - H) // 2)
+        return img.crop((0, top, W, top + H))
+    except Exception as e:
+        log.warning("could not load hero from %s: %s", url, e)
+        return None
+
+
 def _wrap_text(draw, text: str, font, max_w: int) -> list[str]:
     """Word-wrap text to fit within max_w pixels."""
     words = text.split()
@@ -114,17 +139,38 @@ def _draw_text_block(draw, lines: list[str], font, color, start_y: int,
     return y
 
 
-def _base_slide(label: str, slide_num: int, total: int = 7,
-                accent: tuple = ACCENT_CYAN) -> tuple[Image.Image, ImageDraw.ImageDraw]:
-    """Create a dark base slide with progress dots, label, and WaCapital brand."""
-    img  = Image.new("RGB", (W, H), BG)
+def _base_slide(label: str, slide_num: int, total: int = 6,
+                accent: tuple = ACCENT_CYAN,
+                hero_url: Optional[str] = None,
+                darkness: float = 0.78) -> tuple[Image.Image, ImageDraw.ImageDraw]:
+    """
+    Create a slide canvas with WaCapital brand frame.
+
+    If hero_url is provided, the card image is used as background and darkened
+    with `darkness` (0=no overlay, 1=fully black) so the text on top stays
+    readable. Default 0.78 keeps the image as a subtle visual cue while
+    prioritizing legibility.
+
+    If hero_url is None or the download fails, falls back to the original
+    dark base with grid pattern.
+    """
+    hero = _load_hero(hero_url) if hero_url else None
+
+    if hero:
+        # Blend hero with near-black to create a darkened backdrop
+        dark = Image.new("RGB", (W, H), BG)
+        img  = Image.blend(hero, dark, darkness)
+    else:
+        img = Image.new("RGB", (W, H), BG)
+
     draw = ImageDraw.Draw(img)
 
-    # ── Subtle grid pattern (very faint) ─────────────────────────────────────
-    for x in range(0, W, 60):
-        draw.line([(x, 0), (x, H)], fill=(255, 255, 255, 4), width=1)
-    for y in range(0, H, 60):
-        draw.line([(0, y), (W, y)], fill=(255, 255, 255, 4), width=1)
+    # ── Subtle grid pattern only when no hero (avoids visual noise) ─────────
+    if not hero:
+        for x in range(0, W, 60):
+            draw.line([(x, 0), (x, H)], fill=(255, 255, 255, 4), width=1)
+        for y in range(0, H, 60):
+            draw.line([(0, y), (W, y)], fill=(255, 255, 255, 4), width=1)
 
     # ── Top accent bar (2px) ─────────────────────────────────────────────────
     draw.rectangle([0, 0, W, 4], fill=accent)
@@ -214,7 +260,7 @@ def _slide1_hook(post: dict) -> bytes:
     draw.text((48, 36), "WaCapital", font=_bold(36), fill=WHITE)
 
     # Slide number
-    draw.text((W - 80, 44), "1/7", font=_regular(28), fill=GRAY_300)
+    draw.text((W - 80, 44), "1/6", font=_regular(28), fill=GRAY_300)
 
     # Semáforo badge
     badge_text = SEMAFORO_EMOJI.get(semaforo, "⚪ NEUTRAL")
@@ -248,10 +294,11 @@ def _slide1_hook(post: dict) -> bytes:
 
 def _slide_text(slide_num: int, label: str, title: str, body: str,
                 accent: tuple = ACCENT_CYAN, post: dict = None) -> bytes:
-    """Generic dark slide with label, title and body text."""
+    """Slide with hero-as-background + label, title and body text."""
     semaforo = (post or {}).get("semaforo", "neutral")
     acc      = accent if accent != ACCENT_CYAN else SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
-    img, draw = _base_slide(label, slide_num, accent=acc)
+    hero_url = (post or {}).get("card_image_url")
+    img, draw = _base_slide(label, slide_num, total=6, accent=acc, hero_url=hero_url)
 
     cx = W // 2
     content_top = 200
@@ -282,13 +329,16 @@ def _slide_text(slide_num: int, label: str, title: str, body: str,
     return buf.getvalue()
 
 
-def _slide6_semaforo(post: dict) -> bytes:
-    """Slide 6: Big visual semáforo signal."""
+def _slide5_semaforo(post: dict) -> bytes:
+    """Slide 5: Big visual semáforo signal (with hero as background)."""
     semaforo = post.get("semaforo", "neutral")
     accent   = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
     headline = (post.get("headline") or "").strip()
+    hero_url = post.get("card_image_url")
 
-    img, draw = _base_slide("SEÑAL DE MERCADO", 6, accent=accent)
+    # Slightly darker overlay than text slides — the colored circle needs to pop
+    img, draw = _base_slide("SEÑAL DE MERCADO", 5, total=6, accent=accent,
+                            hero_url=hero_url, darkness=0.82)
     cx = W // 2
 
     # Giant colored circle
@@ -341,12 +391,13 @@ def _slide6_semaforo(post: dict) -> bytes:
     return buf.getvalue()
 
 
-def _slide7_cta(post: dict) -> bytes:
-    """Slide 7: CTA — follow + notifications."""
+def _slide6_cta(post: dict) -> bytes:
+    """Slide 6: CTA — follow + notifications. Clean brand slide, no hero bg."""
     semaforo = post.get("semaforo", "neutral")
     accent   = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
 
-    img, draw = _base_slide("NO TE LO PIERDAS", 7, accent=accent)
+    # No hero on CTA — keeps the brand block crisp and distinct from content slides
+    img, draw = _base_slide("NO TE LO PIERDAS", 6, total=6, accent=accent)
     cx = W // 2
 
     # WaCapital big logo text
@@ -411,46 +462,46 @@ def _slide7_cta(post: dict) -> bytes:
 
 def generate_carousel(post: dict) -> list[bytes]:
     """
-    Generate 7 carousel slides for a post.
-    Returns list of PNG bytes, one per slide.
+    Generate 6 carousel slides for a post.
+    Returns list of JPEG bytes, one per slide.
     Returns empty list on total failure.
+
+    Note: previously generated 7 slides but slides 4 and 5 used the same
+    `angle_reasoning` field, producing literally duplicated content. The
+    "IMPACTO" slide was removed in favor of a tighter 6-slide flow.
     """
     # angle_hook/angle_reasoning are in compliance_flags JSONB
-    flags     = post.get("compliance_flags") or {}
-    headline  = (post.get("headline")                      or "Sin titulo").strip()
-    hook      = (flags.get("angle_hook")                   or headline).strip()
-    angle     = (flags.get("angle_reasoning")              or "Analisis en curso.").strip()
-    reasoning = (flags.get("angle_reasoning")              or "Este evento podria impactar los mercados.").strip()
-    semaforo  = post.get("semaforo", "neutral")
-    accent    = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
+    flags    = post.get("compliance_flags") or {}
+    headline = (post.get("headline")           or "Sin titulo").strip()
+    hook     = (flags.get("angle_hook")        or headline).strip()
+    angle    = (flags.get("angle_reasoning")   or "Análisis en curso.").strip()
+    semaforo = post.get("semaforo", "neutral")
+    accent   = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
 
     slides: list[bytes] = []
     builders = [
-        # (fn, args)
-        (lambda: _slide1_hook(post),),
-        (lambda: _slide_text(2, "¿QUÉ PASÓ?",
-                             "El contexto",
-                             headline, accent, post),),
-        (lambda: _slide_text(3, "EL DATO CLAVE",
-                             "El número que importa",
-                             hook, accent, post),),
-        (lambda: _slide_text(4, "EL ANÁLISIS",
-                             "¿Qué significa esto?",
-                             angle, accent, post),),
-        (lambda: _slide_text(5, "¿CÓMO TE AFECTA?",
-                             "El impacto real",
-                             reasoning, accent, post),),
-        (lambda: _slide6_semaforo(post),),
-        (lambda: _slide7_cta(post),),
+        lambda: _slide1_hook(post),
+        lambda: _slide_text(2, "¿QUÉ PASÓ?",
+                            "El contexto",
+                            headline, accent, post),
+        lambda: _slide_text(3, "EL DATO CLAVE",
+                            "El número que importa",
+                            hook, accent, post),
+        lambda: _slide_text(4, "EL ANÁLISIS",
+                            "¿Qué significa esto?",
+                            angle, accent, post),
+        lambda: _slide5_semaforo(post),
+        lambda: _slide6_cta(post),
     ]
 
-    for i, (builder,) in enumerate(builders):
+    total = len(builders)
+    for i, builder in enumerate(builders):
         try:
             slides.append(builder())
-            log.info("  slide %d/7 OK (%d bytes)", i + 1, len(slides[-1]))
+            log.info("  slide %d/%d OK (%d bytes)", i + 1, total, len(slides[-1]))
         except Exception as e:
-            log.error("  slide %d/7 FAILED: %s", i + 1, e)
-            # Insert blank fallback so slide count stays at 7
+            log.error("  slide %d/%d FAILED: %s", i + 1, total, e)
+            # Insert blank fallback so slide count stays consistent
             try:
                 img = Image.new("RGB", (W, H), BG)
                 buf = BytesIO()
@@ -459,8 +510,8 @@ def generate_carousel(post: dict) -> list[bytes]:
             except Exception:
                 pass
 
-    log.info("carousel_generator: %d/7 slides generated for post %s",
-             len(slides), post.get("id", "?"))
+    log.info("carousel_generator: %d/%d slides generated for post %s",
+             len(slides), total, post.get("id", "?"))
     return slides
 
 
