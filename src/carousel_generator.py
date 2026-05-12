@@ -1,24 +1,32 @@
 """
 Carousel generator — Bloque 6c-CAROUSEL.
 
-Generates 6 slides (1080×1920, 9:16 vertical) for TikTok photo carousel.
-Algorithm research (2026): 5-10 slides optimal for completion rate signal;
-6 keeps it punchy without redundancy.
+Generates 5 slides (1080×1920, 9:16 vertical) for TikTok photo carousel.
 
 Slide structure:
-  1. HOOK      — card hero image (full-bleed) + stop-scroll headline
-  2. CONTEXTO  — ¿Qué pasó? (headline expanded) — hero as background
-  3. DATO      — El número/dato clave (angle_hook) — hero as background
-  4. ÁNGULO    — Análisis editorial (angle_reasoning) — hero as background
-  5. SEMÁFORO  — Señal de mercado con color — hero as background
-  6. CTA       — Síguenos @WaCapital + activa 🔔 — clean brand slide
+  1. HOOK      — original WaCapital card (1080×1350 stretched), full headline
+  2. DATO      — angle_hook (punchy data point) — blurred hero as bg
+  3. ANÁLISIS  — angle_reasoning (deeper analysis) — blurred hero as bg
+  4. SEMÁFORO  — market signal with color — blurred hero as bg
+  5. CTA       — @WaCapital + follow + 🔔 — clean brand slide, no bg
 
-All content slides use the card hero image as background (darkened), so the
-visual identity is consistent across the whole carousel. Previous version
-had blank dark backgrounds for slides 2-5 which felt sparse.
+Background strategy on content slides (2-4):
+  • The WaCapital card has built-in headline text rendered into its bottom half.
+    Using the FULL card as a slide background caused that white headline text
+    to bleed through any dark overlay and visually fight with the slide's own
+    body copy. Fix: crop ONLY the top half of the card (the bare AI image,
+    before the gradient/text overlay) before using as background.
+  • Heavy Gaussian blur (radius=40) hides the necessary upscaling artifacts
+    and turns the hero into a moody color wash that maintains visual identity
+    without competing with the foreground text.
 
-Removed previous slide 5 ("IMPACTO" / "El impacto real") because it used the
-same `angle_reasoning` field as slide 4 — content was literally duplicated.
+History:
+  • Original: 7 slides — slides 4 and 5 used the same angle_reasoning field,
+    producing duplicated content.
+  • v2: 6 slides — dropped the duplicated IMPACTO slide. Added card-as-bg
+    which introduced the text bleed problem.
+  • v3 (this): 5 slides — also dropped CONTEXTO (was just the headline,
+    already in slide 1). Card-as-bg now uses only the bare AI part, blurred.
 
 Output: list[bytes] (JPEG), one per slide.
 Stored in Supabase Storage under carousel-slides/{post_id}/slide_NN.jpg
@@ -31,7 +39,7 @@ from io import BytesIO
 from typing import Optional
 
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 log = logging.getLogger("carousel-gen")
 
@@ -90,20 +98,47 @@ def _regular(size): return _font(_REGULAR, _REGULAR_SYS, size)
 
 # ─── Drawing helpers ─────────────────────────────────────────────────────────
 
-def _load_hero(url: Optional[str]) -> Optional[Image.Image]:
-    """Download the card image and crop/scale it to fill 1080×1920 (9:16)."""
+def _load_hero(url: Optional[str], blur: bool = False) -> Optional[Image.Image]:
+    """
+    Download the card image and return it as a 1080×1920 (9:16) background.
+
+    Critical detail: the WaCapital card (1080×1350) has a dark gradient + headline
+    text rendered into its bottom 50%. If we used the full card as a carousel
+    background, that built-in white headline would bleed through any dark overlay
+    and visually fight with the slide's own text on top.
+
+    To avoid this we crop ONLY the top half of the card (the bare AI image, before
+    the gradient/text overlay starts), and optionally blur it. Result: a moody,
+    abstract background that keeps the color identity of the post but is
+    completely free of any text artifacts.
+    """
     if not url:
         return None
     try:
         r = requests.get(url, timeout=20)
         r.raise_for_status()
         img = Image.open(BytesIO(r.content)).convert("RGB")
-        # Scale to fill width, then crop vertically centered
+
+        # The card layout has GRADIENT_START at y=680 (of 1350). Crop above that
+        # to keep only the bare AI image. Threshold check (height >= 1000) avoids
+        # touching non-card sources.
+        if img.height >= 1000:
+            img = img.crop((0, 0, img.width, min(680, img.height)))
+
+        # Scale to fill width, then crop or pad vertically to 1080×1920
         ratio = W / img.width
         new_h = int(img.height * ratio)
         img = img.resize((W, max(new_h, H)), Image.LANCZOS)
         top = max(0, (img.height - H) // 2)
-        return img.crop((0, top, W, top + H))
+        img = img.crop((0, top, W, top + H))
+
+        if blur:
+            # Heavy gaussian blur turns the (necessarily stretched) hero into a
+            # soft color wash. Hides any compression / stretch artifacts and
+            # makes any remaining detail unobtrusive.
+            img = img.filter(ImageFilter.GaussianBlur(radius=40))
+
+        return img
     except Exception as e:
         log.warning("could not load hero from %s: %s", url, e)
         return None
@@ -139,25 +174,25 @@ def _draw_text_block(draw, lines: list[str], font, color, start_y: int,
     return y
 
 
-def _base_slide(label: str, slide_num: int, total: int = 6,
+def _base_slide(label: str, slide_num: int, total: int = 5,
                 accent: tuple = ACCENT_CYAN,
                 hero_url: Optional[str] = None,
-                darkness: float = 0.78) -> tuple[Image.Image, ImageDraw.ImageDraw]:
+                darkness: float = 0.62) -> tuple[Image.Image, ImageDraw.ImageDraw]:
     """
     Create a slide canvas with WaCapital brand frame.
 
-    If hero_url is provided, the card image is used as background and darkened
-    with `darkness` (0=no overlay, 1=fully black) so the text on top stays
-    readable. Default 0.78 keeps the image as a subtle visual cue while
-    prioritizing legibility.
+    If hero_url is provided, the BARE AI hero (top half of the card, blurred)
+    is used as background and darkened with `darkness` (0=no overlay, 1=fully
+    black) so the text on top stays readable. The blur means we can use a
+    lighter overlay (more visual character) without losing legibility, since
+    there is no detail left to fight the text.
 
-    If hero_url is None or the download fails, falls back to the original
-    dark base with grid pattern.
+    If hero_url is None, falls back to a dark base with subtle grid pattern.
     """
-    hero = _load_hero(hero_url) if hero_url else None
+    hero = _load_hero(hero_url, blur=True) if hero_url else None
 
     if hero:
-        # Blend hero with near-black to create a darkened backdrop
+        # Blend blurred hero with near-black for a moody color-tinted backdrop
         dark = Image.new("RGB", (W, H), BG)
         img  = Image.blend(hero, dark, darkness)
     else:
@@ -260,7 +295,7 @@ def _slide1_hook(post: dict) -> bytes:
     draw.text((48, 36), "WaCapital", font=_bold(36), fill=WHITE)
 
     # Slide number
-    draw.text((W - 80, 44), "1/6", font=_regular(28), fill=GRAY_300)
+    draw.text((W - 80, 44), "1/5", font=_regular(28), fill=GRAY_300)
 
     # Semáforo badge
     badge_text = SEMAFORO_EMOJI.get(semaforo, "⚪ NEUTRAL")
@@ -294,11 +329,11 @@ def _slide1_hook(post: dict) -> bytes:
 
 def _slide_text(slide_num: int, label: str, title: str, body: str,
                 accent: tuple = ACCENT_CYAN, post: dict = None) -> bytes:
-    """Slide with hero-as-background + label, title and body text."""
+    """Slide with blurred-hero background + label, title and body text."""
     semaforo = (post or {}).get("semaforo", "neutral")
     acc      = accent if accent != ACCENT_CYAN else SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
     hero_url = (post or {}).get("card_image_url")
-    img, draw = _base_slide(label, slide_num, total=6, accent=acc, hero_url=hero_url)
+    img, draw = _base_slide(label, slide_num, total=5, accent=acc, hero_url=hero_url)
 
     cx = W // 2
     content_top = 200
@@ -329,16 +364,16 @@ def _slide_text(slide_num: int, label: str, title: str, body: str,
     return buf.getvalue()
 
 
-def _slide5_semaforo(post: dict) -> bytes:
-    """Slide 5: Big visual semáforo signal (with hero as background)."""
+def _slide4_semaforo(post: dict) -> bytes:
+    """Slide 4: Big visual semáforo signal (with blurred hero background)."""
     semaforo = post.get("semaforo", "neutral")
     accent   = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
     headline = (post.get("headline") or "").strip()
     hero_url = post.get("card_image_url")
 
-    # Slightly darker overlay than text slides — the colored circle needs to pop
-    img, draw = _base_slide("SEÑAL DE MERCADO", 5, total=6, accent=accent,
-                            hero_url=hero_url, darkness=0.82)
+    # Darker overlay than text slides so the colored circle stands out more
+    img, draw = _base_slide("SEÑAL DE MERCADO", 4, total=5, accent=accent,
+                            hero_url=hero_url, darkness=0.72)
     cx = W // 2
 
     # Giant colored circle
@@ -391,13 +426,13 @@ def _slide5_semaforo(post: dict) -> bytes:
     return buf.getvalue()
 
 
-def _slide6_cta(post: dict) -> bytes:
-    """Slide 6: CTA — follow + notifications. Clean brand slide, no hero bg."""
+def _slide5_cta(post: dict) -> bytes:
+    """Slide 5: CTA — follow + notifications. Clean brand slide, no hero bg."""
     semaforo = post.get("semaforo", "neutral")
     accent   = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
 
     # No hero on CTA — keeps the brand block crisp and distinct from content slides
-    img, draw = _base_slide("NO TE LO PIERDAS", 6, total=6, accent=accent)
+    img, draw = _base_slide("NO TE LO PIERDAS", 5, total=5, accent=accent)
     cx = W // 2
 
     # WaCapital big logo text
@@ -462,18 +497,24 @@ def _slide6_cta(post: dict) -> bytes:
 
 def generate_carousel(post: dict) -> list[bytes]:
     """
-    Generate 6 carousel slides for a post.
+    Generate 5 carousel slides for a post.
     Returns list of JPEG bytes, one per slide.
-    Returns empty list on total failure.
 
-    Note: previously generated 7 slides but slides 4 and 5 used the same
-    `angle_reasoning` field, producing literally duplicated content. The
-    "IMPACTO" slide was removed in favor of a tighter 6-slide flow.
+    Structure:
+      1. HOOK      — card image + headline (the original WaCapital card)
+      2. DATO      — angle_hook (punchy data point)
+      3. ANÁLISIS  — angle_reasoning (deeper analysis)
+      4. SEMÁFORO  — market signal with color
+      5. CTA       — brand + follow
+
+    The redundant "CONTEXTO" slide that re-rendered the headline (already shown
+    in slide 1) was dropped. The hero background on slides 2-4 is sourced from
+    only the top half of the card (the bare AI image) and blurred, so the
+    card's built-in headline text never bleeds through and competes with the
+    slide's own copy.
     """
-    # angle_hook/angle_reasoning are in compliance_flags JSONB
     flags    = post.get("compliance_flags") or {}
-    headline = (post.get("headline")           or "Sin titulo").strip()
-    hook     = (flags.get("angle_hook")        or headline).strip()
+    hook     = (flags.get("angle_hook")        or (post.get("headline") or "Sin titulo")).strip()
     angle    = (flags.get("angle_reasoning")   or "Análisis en curso.").strip()
     semaforo = post.get("semaforo", "neutral")
     accent   = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
@@ -481,17 +522,14 @@ def generate_carousel(post: dict) -> list[bytes]:
     slides: list[bytes] = []
     builders = [
         lambda: _slide1_hook(post),
-        lambda: _slide_text(2, "¿QUÉ PASÓ?",
-                            "El contexto",
-                            headline, accent, post),
-        lambda: _slide_text(3, "EL DATO CLAVE",
+        lambda: _slide_text(2, "EL DATO CLAVE",
                             "El número que importa",
                             hook, accent, post),
-        lambda: _slide_text(4, "EL ANÁLISIS",
+        lambda: _slide_text(3, "EL ANÁLISIS",
                             "¿Qué significa esto?",
                             angle, accent, post),
-        lambda: _slide5_semaforo(post),
-        lambda: _slide6_cta(post),
+        lambda: _slide4_semaforo(post),
+        lambda: _slide5_cta(post),
     ]
 
     total = len(builders)
