@@ -82,6 +82,42 @@ _REGULAR = os.path.join(_HERE, "assets", "fonts", "Inter-Regular.ttf")
 _BOLD_SYS    = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 _REGULAR_SYS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
+# ─── Logo ────────────────────────────────────────────────────────────────────
+
+_LOGO_PATH       = os.path.join(_HERE, "assets", "logo", "wacapital.png")
+_logo_cache: Optional[Image.Image] = None
+
+
+def _load_logo() -> Optional[Image.Image]:
+    """Load WaCapital logo from disk once and cache it for the process lifetime."""
+    global _logo_cache
+    if _logo_cache is not None:
+        return _logo_cache
+    try:
+        _logo_cache = Image.open(_LOGO_PATH).convert("RGBA")
+        log.info("logo loaded: %dx%d", _logo_cache.width, _logo_cache.height)
+        return _logo_cache
+    except Exception as e:
+        log.warning("could not load logo from %s: %s", _LOGO_PATH, e)
+        return None
+
+
+def _paste_logo(img: Image.Image, x: int, y: int, height: int) -> None:
+    """
+    Paste WaCapital logo onto `img` at (x, y), scaled to `height` px tall.
+
+    Preserves aspect ratio. Uses the logo's alpha channel as a paste mask so
+    transparent edges don't clobber the background.
+    """
+    logo = _load_logo()
+    if logo is None:
+        return
+    ratio  = height / logo.height
+    new_w  = int(logo.width * ratio)
+    scaled = logo.resize((new_w, height), Image.LANCZOS)
+    mask   = scaled.split()[3] if scaled.mode == "RGBA" else None
+    img.paste(scaled, (x, y), mask)
+
 
 def _font(path_primary: str, fallback: str, size: int) -> ImageFont.FreeTypeFont:
     for p in [path_primary, fallback]:
@@ -210,9 +246,8 @@ def _base_slide(label: str, slide_num: int, total: int = 5,
     # ── Top accent bar (2px) ─────────────────────────────────────────────────
     draw.rectangle([0, 0, W, 4], fill=accent)
 
-    # ── WaCapital brand — top left ───────────────────────────────────────────
-    brand_font = _bold(32)
-    draw.text((48, 36), "WaCapital", font=brand_font, fill=WHITE)
+    # ── WaCapital brand mark (logo) — top left ───────────────────────────────
+    _paste_logo(img, x=36, y=28, height=80)
 
     # ── Progress dots — top right ────────────────────────────────────────────
     dot_r, dot_gap = 7, 18
@@ -291,10 +326,10 @@ def _slide1_hook(post: dict) -> bytes:
     # Top accent bar
     draw.rectangle([0, 0, W, 6], fill=accent)
 
-    # WaCapital brand
-    draw.text((48, 36), "WaCapital", font=_bold(36), fill=WHITE)
+    # WaCapital brand mark (logo) — top left
+    _paste_logo(img, x=36, y=28, height=80)
 
-    # Slide number
+    # Slide number — top right
     draw.text((W - 80, 44), "1/5", font=_regular(28), fill=GRAY_300)
 
     # Semáforo badge
@@ -435,29 +470,32 @@ def _slide5_cta(post: dict) -> bytes:
     img, draw = _base_slide("NO TE LO PIERDAS", 5, total=5, accent=accent)
     cx = W // 2
 
-    # WaCapital big logo text
-    logo_f = _bold(120)
-    logo_t = "Wa"
-    lbb    = draw.textbbox((0, 0), logo_t, font=logo_f)
-    lw     = lbb[2] - lbb[0]
-    draw.text((cx - lw//2, 260), logo_t, font=logo_f, fill=WHITE)
+    # ── Big WaCapital logo as centerpiece ────────────────────────────────────
+    logo = _load_logo()
+    if logo is not None:
+        logo_height = 460
+        ratio  = logo_height / logo.height
+        new_w  = int(logo.width * ratio)
+        scaled = logo.resize((new_w, logo_height), Image.LANCZOS)
+        mask   = scaled.split()[3] if scaled.mode == "RGBA" else None
+        img.paste(scaled, (cx - new_w // 2, 240), mask)
+    else:
+        # Fallback: text version if logo missing
+        draw.text((cx - draw.textbbox((0, 0), "Wa", font=_bold(120))[2] // 2,
+                   260), "Wa", font=_bold(120), fill=WHITE)
+        draw.text((cx - draw.textbbox((0, 0), "Capital", font=_bold(120))[2] // 2,
+                   380), "Capital", font=_bold(120), fill=accent)
 
-    cap_f = _bold(120)
-    cap_t = "Capital"
-    cbb   = draw.textbbox((0, 0), cap_t, font=cap_f)
-    cw    = cbb[2] - cbb[0]
-    draw.text((cx - cw//2, 380), cap_t, font=cap_f, fill=accent)
-
-    # Tagline
-    tag_f = _regular(40)
+    # Tagline directly under the logo
+    tag_f = _regular(42)
     tag   = "Finanzas que importan"
     tbb   = draw.textbbox((0, 0), tag, font=tag_f)
     tw    = tbb[2] - tbb[0]
-    draw.text((cx - tw//2, 560), tag, font=tag_f, fill=GRAY_300)
+    draw.text((cx - tw // 2, 730), tag, font=tag_f, fill=GRAY_300)
 
     # Divider
-    y = 660
-    draw.rectangle([cx - 200, y, cx + 200, y + 3], fill=(*accent, 150))
+    y = 820
+    draw.rectangle([cx - 200, y, cx + 200, y + 3], fill=(*accent, 200))
     y += 60
 
     # CTA lines
