@@ -236,14 +236,8 @@ def _base_slide(label: str, slide_num: int, total: int = 5,
 
     draw = ImageDraw.Draw(img)
 
-    # ── Subtle grid pattern only when no hero (avoids visual noise) ─────────
-    if not hero:
-        for x in range(0, W, 60):
-            draw.line([(x, 0), (x, H)], fill=(255, 255, 255, 4), width=1)
-        for y in range(0, H, 60):
-            draw.line([(0, y), (W, y)], fill=(255, 255, 255, 4), width=1)
-
-    # ── Top accent bar (2px) ─────────────────────────────────────────────────
+    # ── Top accent bar (4px) ─────────────────────────────────────────────────
+    # (no grid pattern — it was visually noisy and confused viewers)
     draw.rectangle([0, 0, W, 4], fill=accent)
 
     # ── WaCapital brand mark (logo) — top left ───────────────────────────────
@@ -259,17 +253,22 @@ def _base_slide(label: str, slide_num: int, total: int = 5,
         color = WHITE if i == slide_num - 1 else GRAY_500
         draw.ellipse([cx - dot_r, dot_y - dot_r, cx + dot_r, dot_y + dot_r], fill=color)
 
-    # ── Slide label ──────────────────────────────────────────────────────────
+    # ── Slide label (pill with accent outline) ──────────────────────────────
     label_font = _semi(28)
     label_bb   = draw.textbbox((0, 0), label, font=label_font)
     lw = label_bb[2] - label_bb[0]
     label_x = (W - lw) // 2
-    label_y  = 110
-    # Accent pill behind label
-    pad = 20
+    label_y  = 130
+    pad = 24
+    # Solid dark fill + accent-colored outline. Previous version used a
+    # tuple with alpha (`(*accent, 40)`) which Pillow ignores on RGB
+    # canvases — the pill came out as a SOLID accent bar.
     draw.rounded_rectangle(
-        [label_x - pad, label_y - 8, label_x + lw + pad, label_y + 36],
-        radius=20, fill=(*accent, 40)
+        [label_x - pad, label_y - 12, label_x + lw + pad, label_y + 40],
+        radius=22,
+        fill=BG_CARD,
+        outline=accent,
+        width=2,
     )
     draw.text((label_x, label_y), label, font=label_font, fill=accent)
 
@@ -287,13 +286,21 @@ def _base_slide(label: str, slide_num: int, total: int = 5,
 # ─── Individual slide builders ───────────────────────────────────────────────
 
 def _slide1_hook(post: dict) -> bytes:
-    """Slide 1: Full-bleed hero + stop-scroll headline."""
+    """
+    Slide 1: Full-bleed hero + stop-scroll headline.
+
+    The previous version used `draw.line(..., fill=(*BG, alpha))` on an RGB
+    canvas. Pillow ignores the alpha component on RGB images, so every line
+    from y=H/3 down was painted SOLID BLACK — collapsing the bottom 2/3 of
+    the slide into a flat wall and hiding the hero. Fixed here by building
+    a separate RGBA overlay and alpha_composite-ing onto the base.
+    """
     card_url = post.get("card_image_url")
     headline = (post.get("headline") or "").strip()
     semaforo = post.get("semaforo", "neutral")
     accent   = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
 
-    # Load hero image (the existing card), scale to 9:16
+    # Load hero (the existing card) and scale to fill 1080×1920 (cover-fit)
     hero = None
     if card_url:
         try:
@@ -306,22 +313,29 @@ def _slide1_hook(post: dict) -> bytes:
     img = Image.new("RGB", (W, H), BG)
 
     if hero:
-        # Scale to fill width, crop vertically centered
-        ratio = W / hero.width
-        new_h = int(hero.height * ratio)
-        hero  = hero.resize((W, max(new_h, H)), Image.LANCZOS)
-        top   = max(0, (hero.height - H) // 2)
-        hero  = hero.crop((0, top, W, top + H))
+        # Cover-fit: scale so the image fills both dimensions, then center-crop
+        scale = max(W / hero.width, H / hero.height)
+        nw, nh = int(hero.width * scale), int(hero.height * scale)
+        hero = hero.resize((nw, nh), Image.LANCZOS)
+        left = max(0, (nw - W) // 2)
+        top  = max(0, (nh - H) // 2)
+        hero = hero.crop((left, top, left + W, top + H))
         img.paste(hero, (0, 0))
 
+    # ── Gradient overlay — proper alpha compositing ─────────────────────────
+    # Fade from 0% black at y=H*0.55 to ~88% black at y=H. Keeps the top of
+    # the hero pristine and only darkens the bottom where text will sit.
+    overlay     = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    over_draw   = ImageDraw.Draw(overlay)
+    fade_start  = int(H * 0.55)
+    fade_end    = H
+    for y in range(fade_start, fade_end):
+        t = (y - fade_start) / (fade_end - fade_start)
+        alpha = int(225 * (t ** 1.4))     # eased curve, gentler middle, dense bottom
+        over_draw.line([(0, y), (W, y)], fill=(BG[0], BG[1], BG[2], alpha))
+    base_rgba = img.convert("RGBA")
+    img = Image.alpha_composite(base_rgba, overlay).convert("RGB")
     draw = ImageDraw.Draw(img)
-
-    # Gradient overlay: bottom 2/3 fades to near-black
-    fade_start = H // 3
-    for y in range(fade_start, H):
-        t = (y - fade_start) / (H - fade_start)
-        alpha = int(220 * min(t * 1.4, 1.0))
-        draw.line([(0, y), (W, y)], fill=(*BG, alpha))
 
     # Top accent bar
     draw.rectangle([0, 0, W, 6], fill=accent)
@@ -330,32 +344,35 @@ def _slide1_hook(post: dict) -> bytes:
     _paste_logo(img, x=36, y=28, height=80)
 
     # Slide number — top right
-    draw.text((W - 80, 44), "1/5", font=_regular(28), fill=GRAY_300)
+    draw.text((W - 86, 44), "1/5", font=_regular(28), fill=GRAY_300)
 
-    # Semáforo badge
+    # Semáforo badge — sits just above the headline block
     badge_text = SEMAFORO_EMOJI.get(semaforo, "⚪ NEUTRAL")
-    badge_font = _semi(30)
+    badge_font = _semi(32)
     bb   = draw.textbbox((0, 0), badge_text, font=badge_font)
     bw   = bb[2] - bb[0]
     bx   = (W - bw) // 2
-    by   = H - 520
-    draw.rounded_rectangle([bx - 24, by - 8, bx + bw + 24, by + 44],
-                            radius=24, fill=(*accent, 50))
+    by   = H - 540
+    # Solid pill (not alpha-tuple — was broken on RGB)
+    draw.rounded_rectangle([bx - 26, by - 10, bx + bw + 26, by + 50],
+                            radius=26, fill=BG_CARD, outline=accent, width=2)
     draw.text((bx, by), badge_text, font=badge_font, fill=accent)
 
     # Headline — big, centered, bottom third
-    h_font = _bold(62)
-    lines  = _wrap_text(draw, headline, h_font, W - 80)
+    h_font = _bold(64)
+    lines  = _wrap_text(draw, headline, h_font, W - 100)
     if len(lines) > 4:
         lines = lines[:4]
-        lines[-1] = lines[-1][:-3] + "…"
+        lines[-1] = lines[-1].rstrip(".,;:") + "…"
     _draw_text_block(draw, lines, h_font, WHITE, H - 460, W // 2, line_spacing=14)
 
     # Bottom brand bar
-    draw.rectangle([0, H - 80, W, H], fill=(*BG, 200))
-    draw.text(((W - 300) // 2, H - 55),
-              "@WaCapital • Finanzas que importan",
-              font=_regular(26), fill=GRAY_500)
+    draw.rectangle([0, H - 80, W, H], fill=GRAY_800)
+    handle = "@WaCapital • Finanzas que importan"
+    hf     = _regular(26)
+    hbb    = draw.textbbox((0, 0), handle, font=hf)
+    hw     = hbb[2] - hbb[0]
+    draw.text(((W - hw) // 2, H - 55), handle, font=hf, fill=GRAY_500)
 
     buf = BytesIO()
     img.save(buf, "JPEG", quality=90)
@@ -364,35 +381,59 @@ def _slide1_hook(post: dict) -> bytes:
 
 def _slide_text(slide_num: int, label: str, title: str, body: str,
                 accent: tuple = ACCENT_CYAN, post: dict = None) -> bytes:
-    """Slide with blurred-hero background + label, title and body text."""
+    """
+    Text slide — blurred-hero background, big body text centered vertically.
+
+    Previous version pinned the title to y=200 and the body below it, leaving
+    most of the slide empty at the bottom. Now we vertically center the body
+    block in the available area (between top brand and bottom brand bars),
+    so the slide feels balanced and the eye lands on the content.
+    """
     semaforo = (post or {}).get("semaforo", "neutral")
     acc      = accent if accent != ACCENT_CYAN else SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
     hero_url = (post or {}).get("card_image_url")
     img, draw = _base_slide(label, slide_num, total=5, accent=acc, hero_url=hero_url)
 
     cx = W // 2
-    content_top = 200
 
-    # Title
-    t_font = _bold(66)
-    t_lines = _wrap_text(draw, title, t_font, W - 100)
-    if len(t_lines) > 3:
-        t_lines = t_lines[:3]
-        t_lines[-1] = t_lines[-1][:-3] + "…"
-    y = _draw_text_block(draw, t_lines, t_font, WHITE, content_top, cx, 16)
+    # ── Build the body block first so we can vertical-center it ─────────────
+    b_font  = _bold(68)                                 # bigger than before (was 44 semi)
+    b_lines = _wrap_text(draw, body, b_font, W - 120)
+    # If body wraps too long at the chosen size, shrink the font instead of
+    # ellipsizing — we'd rather see all the text smaller than have "..."
+    for size in (68, 62, 56, 50, 46):
+        b_font  = _bold(size)
+        b_lines = _wrap_text(draw, body, b_font, W - 120)
+        if len(b_lines) <= 8:
+            break
+    if len(b_lines) > 8:
+        b_lines = b_lines[:8]
+        b_lines[-1] = b_lines[-1].rstrip(".,;:") + "…"
+
+    line_h     = b_font.size + 16
+    body_h     = len(b_lines) * line_h
+    title_font = _semi(42)
+    title_h    = title_font.size + 18
+    divider_h  = 60
+
+    block_h    = title_h + divider_h + body_h
+    safe_top   = 250                       # below label pill
+    safe_bot   = H - 130                   # above brand bar
+    available  = safe_bot - safe_top
+    block_y    = safe_top + max(0, (available - block_h) // 2)
+
+    # Title (smaller, sits above the body as a subhead)
+    tbb   = draw.textbbox((0, 0), title, font=title_font)
+    tw    = tbb[2] - tbb[0]
+    draw.text((cx - tw // 2, block_y), title, font=title_font, fill=acc)
 
     # Divider
-    y += 40
-    draw.rectangle([cx - 120, y, cx + 120, y + 3], fill=acc)
-    y += 36
+    div_y = block_y + title_h + 20
+    draw.rectangle([cx - 110, div_y, cx + 110, div_y + 4], fill=acc)
 
     # Body
-    b_font  = _semi(44)
-    b_lines = _wrap_text(draw, body, b_font, W - 120)
-    if len(b_lines) > 7:
-        b_lines = b_lines[:7]
-        b_lines[-1] = b_lines[-1][:-3] + "…"
-    _draw_text_block(draw, b_lines, b_font, GRAY_300, y, cx, 20)
+    body_y = div_y + divider_h - 10
+    _draw_text_block(draw, b_lines, b_font, WHITE, body_y, cx, 16)
 
     buf = BytesIO()
     img.save(buf, "JPEG", quality=90)
@@ -400,61 +441,111 @@ def _slide_text(slide_num: int, label: str, title: str, body: str,
 
 
 def _slide4_semaforo(post: dict) -> bytes:
-    """Slide 4: Big visual semáforo signal (with blurred hero background)."""
+    """
+    Slide 4: Real traffic light — 3 stacked circles (red/yellow/green), only the
+    one matching the post's semáforo state is fully lit. The other two are
+    dim/gray-out, like a real signal.
+    """
     semaforo = post.get("semaforo", "neutral")
     accent   = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
     headline = (post.get("headline") or "").strip()
     hero_url = post.get("card_image_url")
 
-    # Darker overlay than text slides so the colored circle stands out more
+    # Stronger darkening so the colored circle is unambiguous
     img, draw = _base_slide("SEÑAL DE MERCADO", 4, total=5, accent=accent,
-                            hero_url=hero_url, darkness=0.72)
+                            hero_url=hero_url, darkness=0.78)
     cx = W // 2
 
-    # Giant colored circle
-    cy = 680
-    r  = 240
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r],
-                 fill=(*accent, 30), outline=accent, width=8)
+    # ── Housing: tall rounded rectangle (the traffic light body) ────────────
+    housing_w  = 360
+    housing_h  = 920
+    housing_x  = cx - housing_w // 2
+    housing_y  = 280
+    draw.rounded_rectangle(
+        [housing_x, housing_y, housing_x + housing_w, housing_y + housing_h],
+        radius=60,
+        fill=(18, 22, 32),
+        outline=(60, 70, 90),
+        width=6,
+    )
 
-    # Inner ring
-    r2 = 180
-    draw.ellipse([cx - r2, cy - r2, cx + r2, cy + r2],
-                 fill=(*accent, 15), outline=(*accent, 120), width=4)
+    # ── Three lights, stacked vertically ────────────────────────────────────
+    light_r       = 130
+    inner_gap_y   = 70                                  # padding from housing edges
+    span_y        = housing_h - 2 * inner_gap_y
+    slot_h        = span_y / 3
+    states_order  = [
+        ("rojo",     ACCENT_RED,    "MERCADO BAJISTA"),
+        ("amarillo", ACCENT_YELLOW, "PRECAUCIÓN"),
+        ("verde",    ACCENT_GREEN,  "MERCADO ALCISTA"),
+    ]
+    # Neutral maps to "no light on" — handled below
+    active_state = semaforo if semaforo in ("rojo", "amarillo", "verde") else None
 
-    # Semáforo text inside circle
-    labels = {
-        "verde":    ("BULL", "MERCADO ALCISTA"),
-        "amarillo": ("WAIT", "PRECAUCIÓN"),
-        "rojo":     ("BEAR", "MERCADO BAJISTA"),
-        "neutral":  ("HOLD", "NEUTRAL"),
+    for i, (state, color, _label) in enumerate(states_order):
+        ly = int(housing_y + inner_gap_y + slot_h * (i + 0.5))
+        is_on = (state == active_state)
+        if is_on:
+            # Outer glow halo
+            for halo_r, halo_alpha in [(light_r + 36, 32), (light_r + 22, 56), (light_r + 10, 90)]:
+                halo = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+                hd   = ImageDraw.Draw(halo)
+                hd.ellipse(
+                    [cx - halo_r, ly - halo_r, cx + halo_r, ly + halo_r],
+                    fill=(*color, halo_alpha),
+                )
+                img_rgba = img.convert("RGBA")
+                img      = Image.alpha_composite(img_rgba, halo).convert("RGB")
+                draw     = ImageDraw.Draw(img)
+            # Lit bulb
+            draw.ellipse(
+                [cx - light_r, ly - light_r, cx + light_r, ly + light_r],
+                fill=color, outline=WHITE, width=3,
+            )
+            # Inner highlight (gives a "glass bulb" feel)
+            hl_r = light_r // 2
+            hl_x = cx - light_r // 3
+            hl_y = ly - light_r // 3
+            highlight = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            hd2 = ImageDraw.Draw(highlight)
+            hd2.ellipse(
+                [hl_x - hl_r, hl_y - hl_r, hl_x + hl_r, hl_y + hl_r],
+                fill=(255, 255, 255, 60),
+            )
+            img_rgba = img.convert("RGBA")
+            img      = Image.alpha_composite(img_rgba, highlight).convert("RGB")
+            draw     = ImageDraw.Draw(img)
+        else:
+            # Off — dim, dark version of the color
+            dim_color = (color[0] // 5, color[1] // 5, color[2] // 5)
+            draw.ellipse(
+                [cx - light_r, ly - light_r, cx + light_r, ly + light_r],
+                fill=dim_color, outline=(70, 80, 100), width=3,
+            )
+
+    # ── Label below the traffic light ────────────────────────────────────────
+    label_text_map = {
+        "verde":    "MERCADO ALCISTA",
+        "amarillo": "PRECAUCIÓN",
+        "rojo":     "MERCADO BAJISTA",
+        "neutral":  "SEÑAL NEUTRAL",
     }
-    short, long_ = labels.get(semaforo, ("HOLD", "NEUTRAL"))
-    draw.text((cx - draw.textbbox((0,0), short, font=_bold(100))[2]//2 +
-               draw.textbbox((0,0), short, font=_bold(100))[0]//2,
-               cy - 70), short, font=_bold(100), fill=accent)
+    label_color   = SEMAFORO_COLOR.get(semaforo, GRAY_300)
+    state_label   = label_text_map.get(semaforo, "SEÑAL NEUTRAL")
+    state_font    = _bold(56)
+    sbb           = draw.textbbox((0, 0), state_label, font=state_font)
+    sw            = sbb[2] - sbb[0]
+    state_y       = housing_y + housing_h + 50
+    draw.text((cx - sw // 2, state_y), state_label, font=state_font, fill=label_color)
 
-    # Re-draw short text properly centered
-    sf = _bold(100)
-    sbb = draw.textbbox((0, 0), short, font=sf)
-    sw = sbb[2] - sbb[0]
-    draw.text((cx - sw//2, cy - 65), short, font=sf, fill=accent)
-
-    lf  = _semi(36)
-    lbb = draw.textbbox((0, 0), long_, font=lf)
-    lw  = lbb[2] - lbb[0]
-    draw.text((cx - lw//2, cy + 60), long_, font=lf, fill=WHITE)
-
-    # Context: post headline (brief)
-    y = cy + r + 60
-    draw.rectangle([cx - 120, y, cx + 120, y + 3], fill=(*accent, 150))
-    y += 36
-
-    h_font  = _semi(40)
-    h_lines = _wrap_text(draw, headline, h_font, W - 120)
-    if len(h_lines) > 3:
-        h_lines = h_lines[:3]
-    _draw_text_block(draw, h_lines, h_font, GRAY_300, y, cx, 16)
+    # Small headline context under the label, muted
+    ctx_y = state_y + 90
+    ctx_f = _regular(32)
+    ctx_lines = _wrap_text(draw, headline, ctx_f, W - 160)
+    if len(ctx_lines) > 2:
+        ctx_lines = ctx_lines[:2]
+        ctx_lines[-1] = ctx_lines[-1].rstrip(".,;:") + "…"
+    _draw_text_block(draw, ctx_lines, ctx_f, GRAY_300, ctx_y, cx, 8)
 
     buf = BytesIO()
     img.save(buf, "JPEG", quality=90)
@@ -493,9 +584,9 @@ def _slide5_cta(post: dict) -> bytes:
     tw    = tbb[2] - tbb[0]
     draw.text((cx - tw // 2, 730), tag, font=tag_f, fill=GRAY_300)
 
-    # Divider
+    # Divider (solid accent color — no alpha tuple, RGB ignores it anyway)
     y = 820
-    draw.rectangle([cx - 200, y, cx + 200, y + 3], fill=(*accent, 200))
+    draw.rectangle([cx - 200, y, cx + 200, y + 4], fill=accent)
     y += 60
 
     # CTA lines
