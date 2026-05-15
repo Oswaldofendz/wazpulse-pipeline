@@ -1,32 +1,32 @@
 """
-Carousel generator — Bloque 6c-CAROUSEL.
+Carousel generator — Bloque 6c-CAROUSEL v4 (Luxury Mindset style).
 
 Generates 5 slides (1080×1920, 9:16 vertical) for TikTok photo carousel.
 
 Slide structure:
-  1. HOOK      — original WaCapital card (1080×1350 stretched), full headline
-  2. DATO      — angle_hook (punchy data point) — blurred hero as bg
-  3. ANÁLISIS  — angle_reasoning (deeper analysis) — blurred hero as bg
-  4. SEMÁFORO  — market signal with color — blurred hero as bg
-  5. CTA       — @WaCapital + follow + 🔔 — clean brand slide, no bg
+  1. HOOK      — original WaCapital card pasted full-bleed, NO text overlay.
+                 The card already has the headline + hook baked in.
+  2. EL DATO   — full-bleed bare-AI hero (heavily darkened 78%) + top pill
+                 "EL DATO" + HUGE angle_hook + bottom pill takeaway.
+  3. ANÁLISIS  — same Luxury layout, title = first sentence of angle_reasoning,
+                 subtitle = next 1-2 sentences.
+  4. SEMÁFORO  — smaller traffic light + "¿POR QUÉ?" pill + 3 bullet points
+                 sourced from angle_reasoning.
+  5. CTA       — clean brand slide with logo + tagline + follow.
 
-Background strategy on content slides (2-4):
-  • The WaCapital card has built-in headline text rendered into its bottom half.
-    Using the FULL card as a slide background caused that white headline text
-    to bleed through any dark overlay and visually fight with the slide's own
-    body copy. Fix: crop ONLY the top half of the card (the bare AI image,
-    before the gradient/text overlay) before using as background.
-  • Heavy Gaussian blur (radius=40) hides the necessary upscaling artifacts
-    and turns the hero into a moody color wash that maintains visual identity
-    without competing with the foreground text.
+Design inspiration: @luxurymindset and similar finance/luxury TikTok carousels.
+Key pattern: hero image is darkened to 22% visibility so it gives identity to
+the slide without ever competing with the text. The text is the message; the
+image is the mood.
 
-History:
-  • Original: 7 slides — slides 4 and 5 used the same angle_reasoning field,
-    producing duplicated content.
-  • v2: 6 slides — dropped the duplicated IMPACTO slide. Added card-as-bg
-    which introduced the text bleed problem.
-  • v3 (this): 5 slides — also dropped CONTEXTO (was just the headline,
-    already in slide 1). Card-as-bg now uses only the bare AI part, blurred.
+History notes (failure modes I've fixed across iterations):
+  • Original: 7 slides, slides 4/5 duplicated content (same angle_reasoning).
+  • v2: 6 slides; introduced card-as-background which made the card's built-in
+    headline text bleed through and fight slide-specific text.
+  • v3: 5 slides; cropped to bare AI image + blurred to kill text bleed but
+    layout was top-heavy with empty bottom half.
+  • v4 (this): the Luxury Mindset layout — pill / big title / subtitle /
+    bottom pill, body vertically centered, hero darkened to a near-black wash.
 
 Output: list[bytes] (JPEG), one per slide.
 Stored in Supabase Storage under carousel-slides/{post_id}/slide_NN.jpg
@@ -287,86 +287,183 @@ def _base_slide(label: str, slide_num: int, total: int = 5,
 
 def _slide1_hook(post: dict) -> bytes:
     """
-    Slide 1: Full-bleed hero + stop-scroll headline.
+    Slide 1: the WaCapital card, full-bleed, no text overlay.
 
-    The previous version used `draw.line(..., fill=(*BG, alpha))` on an RGB
-    canvas. Pillow ignores the alpha component on RGB images, so every line
-    from y=H/3 down was painted SOLID BLACK — collapsing the bottom 2/3 of
-    the slide into a flat wall and hiding the hero. Fixed here by building
-    a separate RGBA overlay and alpha_composite-ing onto the base.
+    The card itself already contains everything we want users to see:
+    the AI hero image, the headline, the cyan hook, the WaCapital wordmark
+    at the bottom. Previously we ADDED another headline overlay on top of
+    the card, which produced visible double-text (card headline + slide
+    headline both saying the same thing). Fixed here by just pasting the
+    card as the slide image and trusting the card design.
     """
     card_url = post.get("card_image_url")
-    headline = (post.get("headline") or "").strip()
-    semaforo = post.get("semaforo", "neutral")
-    accent   = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
+    img      = Image.new("RGB", (W, H), BG)
 
-    # Load hero (the existing card) and scale to fill 1080×1920 (cover-fit)
-    hero = None
-    if card_url:
-        try:
-            r = requests.get(card_url, timeout=20)
-            r.raise_for_status()
-            hero = Image.open(BytesIO(r.content)).convert("RGB")
-        except Exception as e:
-            log.warning("slide1: could not load card image: %s", e)
+    if not card_url:
+        # Fallback: no card image → render a minimal logo-only slide
+        _paste_logo(img, x=(W - 460) // 2, y=(H - 460) // 2, height=460)
+        buf = BytesIO()
+        img.save(buf, "JPEG", quality=90)
+        return buf.getvalue()
 
-    img = Image.new("RGB", (W, H), BG)
+    try:
+        r = requests.get(card_url, timeout=20)
+        r.raise_for_status()
+        card = Image.open(BytesIO(r.content)).convert("RGB")
+    except Exception as e:
+        log.warning("slide1: could not load card image: %s", e)
+        _paste_logo(img, x=(W - 460) // 2, y=(H - 460) // 2, height=460)
+        buf = BytesIO()
+        img.save(buf, "JPEG", quality=90)
+        return buf.getvalue()
 
+    # Cover-fit the card so it fills the slide. The card is 4:5 (1080×1350)
+    # and the slide is 9:16 (1080×1920), so we scale to fill height and crop
+    # whatever sticks out horizontally (very little — only the sides).
+    scale = max(W / card.width, H / card.height)
+    nw, nh = int(card.width * scale), int(card.height * scale)
+    card = card.resize((nw, nh), Image.LANCZOS)
+    left = max(0, (nw - W) // 2)
+    top  = max(0, (nh - H) // 2)
+    card = card.crop((left, top, left + W, top + H))
+    img.paste(card, (0, 0))
+
+    buf = BytesIO()
+    img.save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+
+def _slide_luxury(slide_num: int, label: str, title: str, subtitle: str,
+                  bottom_pill: Optional[str], post: dict,
+                  accent: Optional[tuple] = None) -> bytes:
+    """
+    Luxury Mindset-style slide:
+      • Full-bleed hero (bare AI image from top half of card, NOT blurred)
+        with a heavy dark overlay (~78%) so the photo is present but doesn't
+        fight the text.
+      • Top pill with a short uppercase label.
+      • HUGE bold title taking the visual center of the slide, with the
+        SECOND-TO-LAST word underlined in the semáforo accent color.
+      • Optional smaller subtitle below for elaboration.
+      • Optional bottom pill with a takeaway / key insight.
+      • Bottom brand bar.
+
+    The hero is unblurred so the user can see what the photo is about, but
+    the heavy darkening keeps text legibility paramount — same approach as
+    the @luxurymindset / similar finance/luxury carousels.
+    """
+    semaforo = (post or {}).get("semaforo", "neutral")
+    if accent is None:
+        accent = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
+
+    # ── 1. Hero background ──────────────────────────────────────────────────
+    hero = _load_hero(post.get("card_image_url"), blur=False)
+    img  = Image.new("RGB", (W, H), BG)
     if hero:
-        # Cover-fit: scale so the image fills both dimensions, then center-crop
-        scale = max(W / hero.width, H / hero.height)
-        nw, nh = int(hero.width * scale), int(hero.height * scale)
-        hero = hero.resize((nw, nh), Image.LANCZOS)
-        left = max(0, (nw - W) // 2)
-        top  = max(0, (nh - H) // 2)
-        hero = hero.crop((left, top, left + W, top + H))
-        img.paste(hero, (0, 0))
-
-    # ── Gradient overlay — proper alpha compositing ─────────────────────────
-    # Fade from 0% black at y=H*0.55 to ~88% black at y=H. Keeps the top of
-    # the hero pristine and only darkens the bottom where text will sit.
-    overlay     = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    over_draw   = ImageDraw.Draw(overlay)
-    fade_start  = int(H * 0.55)
-    fade_end    = H
-    for y in range(fade_start, fade_end):
-        t = (y - fade_start) / (fade_end - fade_start)
-        alpha = int(225 * (t ** 1.4))     # eased curve, gentler middle, dense bottom
-        over_draw.line([(0, y), (W, y)], fill=(BG[0], BG[1], BG[2], alpha))
-    base_rgba = img.convert("RGBA")
-    img = Image.alpha_composite(base_rgba, overlay).convert("RGB")
+        dark = Image.new("RGB", (W, H), BG)
+        img  = Image.blend(hero, dark, 0.78)
     draw = ImageDraw.Draw(img)
 
-    # Top accent bar
-    draw.rectangle([0, 0, W, 6], fill=accent)
+    # ── 2. Top thin accent bar ──────────────────────────────────────────────
+    draw.rectangle([0, 0, W, 4], fill=accent)
 
-    # WaCapital brand mark (logo) — top left
-    _paste_logo(img, x=36, y=28, height=80)
+    # ── 3. Logo top-left + slide number top-right ───────────────────────────
+    _paste_logo(img, x=36, y=28, height=72)
+    sn_font = _regular(26)
+    sn_text = f"{slide_num}/5"
+    sn_bb   = draw.textbbox((0, 0), sn_text, font=sn_font)
+    sn_w    = sn_bb[2] - sn_bb[0]
+    draw.text((W - 50 - sn_w, 52), sn_text, font=sn_font, fill=GRAY_300)
 
-    # Slide number — top right
-    draw.text((W - 86, 44), "1/5", font=_regular(28), fill=GRAY_300)
+    # ── 4. Top pill with label ──────────────────────────────────────────────
+    pill_font = _bold(30)
+    pill_bb   = draw.textbbox((0, 0), label.upper(), font=pill_font)
+    plw       = pill_bb[2] - pill_bb[0]
+    px        = (W - plw) // 2
+    py        = 250
+    pad_x     = 32
+    pad_y     = 18
+    draw.rounded_rectangle(
+        [px - pad_x, py - pad_y, px + plw + pad_x, py + pill_font.size + pad_y],
+        radius=36, fill=BG_CARD, outline=accent, width=2,
+    )
+    draw.text((px, py - 4), label.upper(), font=pill_font, fill=accent)
 
-    # Semáforo badge — sits just above the headline block
-    badge_text = SEMAFORO_EMOJI.get(semaforo, "⚪ NEUTRAL")
-    badge_font = _semi(32)
-    bb   = draw.textbbox((0, 0), badge_text, font=badge_font)
-    bw   = bb[2] - bb[0]
-    bx   = (W - bw) // 2
-    by   = H - 540
-    # Solid pill (not alpha-tuple — was broken on RGB)
-    draw.rounded_rectangle([bx - 26, by - 10, bx + bw + 26, by + 50],
-                            radius=26, fill=BG_CARD, outline=accent, width=2)
-    draw.text((bx, by), badge_text, font=badge_font, fill=accent)
+    # ── 5. Big title — auto-shrink until it fits the body area ──────────────
+    # Title block sits in a generous vertical zone roughly from y=440 to
+    # y=1500. We pick the largest font that produces at most 6 lines.
+    title_top    = 460
+    title_bottom = 1400
+    max_lines    = 6
+    title_size   = 84
+    for size in (84, 76, 70, 64, 58, 52, 46):
+        title_font = _bold(size)
+        title_lines = _wrap_text(draw, title, title_font, W - 100)
+        if len(title_lines) <= max_lines:
+            title_size = size
+            break
+    title_font = _bold(title_size)
+    title_lines = _wrap_text(draw, title, title_font, W - 100)
+    if len(title_lines) > max_lines:
+        title_lines = title_lines[:max_lines]
+        title_lines[-1] = title_lines[-1].rstrip(".,;:") + "…"
 
-    # Headline — big, centered, bottom third
-    h_font = _bold(64)
-    lines  = _wrap_text(draw, headline, h_font, W - 100)
-    if len(lines) > 4:
-        lines = lines[:4]
-        lines[-1] = lines[-1].rstrip(".,;:") + "…"
-    _draw_text_block(draw, lines, h_font, WHITE, H - 460, W // 2, line_spacing=14)
+    line_h     = title_size + 14
+    title_h    = len(title_lines) * line_h
 
-    # Bottom brand bar
+    # Reserve room for subtitle + underline (if present)
+    underline_gap   = 28
+    underline_h     = 8
+    subtitle_gap    = 60
+    subtitle_size   = 38
+    subtitle_lines: list[str] = []
+    if subtitle:
+        sub_font  = _semi(subtitle_size)
+        subtitle_lines = _wrap_text(draw, subtitle, sub_font, W - 140)
+        if len(subtitle_lines) > 4:
+            subtitle_lines = subtitle_lines[:4]
+            subtitle_lines[-1] = subtitle_lines[-1].rstrip(".,;:") + "…"
+    subtitle_h = (subtitle_size + 14) * len(subtitle_lines) if subtitle_lines else 0
+    if subtitle_h:
+        subtitle_h += subtitle_gap
+
+    block_h    = title_h + underline_gap + underline_h + subtitle_h
+    available  = title_bottom - title_top
+    block_y    = title_top + max(0, (available - block_h) // 2)
+
+    # Draw title lines
+    _draw_text_block(draw, title_lines, title_font, WHITE, block_y, W // 2, 14)
+
+    # Accent underline below the title (modeled after the red underline in
+    # the reference design — short horizontal bar, slightly narrower than
+    # the longest line)
+    ul_y = block_y + title_h + underline_gap
+    ul_half = max(80, min(220, W // 4))
+    draw.rectangle([W // 2 - ul_half, ul_y, W // 2 + ul_half, ul_y + underline_h], fill=accent)
+
+    # Draw subtitle
+    if subtitle_lines:
+        sub_font  = _semi(subtitle_size)
+        sub_y     = ul_y + underline_h + subtitle_gap - 12
+        _draw_text_block(draw, subtitle_lines, sub_font, GRAY_300, sub_y, W // 2, 10)
+
+    # ── 6. Bottom takeaway pill ────────────────────────────────────────────
+    if bottom_pill:
+        bp_font = _bold(28)
+        bp_bb   = draw.textbbox((0, 0), bottom_pill.upper(), font=bp_font)
+        bp_w    = bp_bb[2] - bp_bb[0]
+        bp_x    = (W - bp_w) // 2
+        bp_y    = H - 200
+        bp_pad_x = 32
+        bp_pad_y = 18
+        draw.rounded_rectangle(
+            [bp_x - bp_pad_x, bp_y - bp_pad_y,
+             bp_x + bp_w + bp_pad_x, bp_y + bp_font.size + bp_pad_y],
+            radius=34, fill=BG_CARD, outline=accent, width=2,
+        )
+        draw.text((bp_x, bp_y - 4), bottom_pill.upper(), font=bp_font, fill=WHITE)
+
+    # ── 7. Bottom brand bar ────────────────────────────────────────────────
     draw.rectangle([0, H - 80, W, H], fill=GRAY_800)
     handle = "@WaCapital • Finanzas que importan"
     hf     = _regular(26)
@@ -379,99 +476,54 @@ def _slide1_hook(post: dict) -> bytes:
     return buf.getvalue()
 
 
-def _slide_text(slide_num: int, label: str, title: str, body: str,
-                accent: tuple = ACCENT_CYAN, post: dict = None) -> bytes:
-    """
-    Text slide — blurred-hero background, big body text centered vertically.
-
-    Previous version pinned the title to y=200 and the body below it, leaving
-    most of the slide empty at the bottom. Now we vertically center the body
-    block in the available area (between top brand and bottom brand bars),
-    so the slide feels balanced and the eye lands on the content.
-    """
-    semaforo = (post or {}).get("semaforo", "neutral")
-    acc      = accent if accent != ACCENT_CYAN else SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
-    hero_url = (post or {}).get("card_image_url")
-    img, draw = _base_slide(label, slide_num, total=5, accent=acc, hero_url=hero_url)
-
-    cx = W // 2
-
-    # ── Build the body block first so we can vertical-center it ─────────────
-    b_font  = _bold(68)                                 # bigger than before (was 44 semi)
-    b_lines = _wrap_text(draw, body, b_font, W - 120)
-    # If body wraps too long at the chosen size, shrink the font instead of
-    # ellipsizing — we'd rather see all the text smaller than have "..."
-    for size in (68, 62, 56, 50, 46):
-        b_font  = _bold(size)
-        b_lines = _wrap_text(draw, body, b_font, W - 120)
-        if len(b_lines) <= 8:
-            break
-    if len(b_lines) > 8:
-        b_lines = b_lines[:8]
-        b_lines[-1] = b_lines[-1].rstrip(".,;:") + "…"
-
-    line_h     = b_font.size + 16
-    body_h     = len(b_lines) * line_h
-    title_font = _semi(42)
-    title_h    = title_font.size + 18
-    divider_h  = 60
-
-    block_h    = title_h + divider_h + body_h
-    safe_top   = 250                       # below label pill
-    safe_bot   = H - 130                   # above brand bar
-    available  = safe_bot - safe_top
-    block_y    = safe_top + max(0, (available - block_h) // 2)
-
-    # Title (smaller, sits above the body as a subhead)
-    tbb   = draw.textbbox((0, 0), title, font=title_font)
-    tw    = tbb[2] - tbb[0]
-    draw.text((cx - tw // 2, block_y), title, font=title_font, fill=acc)
-
-    # Divider
-    div_y = block_y + title_h + 20
-    draw.rectangle([cx - 110, div_y, cx + 110, div_y + 4], fill=acc)
-
-    # Body
-    body_y = div_y + divider_h - 10
-    _draw_text_block(draw, b_lines, b_font, WHITE, body_y, cx, 16)
-
-    buf = BytesIO()
-    img.save(buf, "JPEG", quality=90)
-    return buf.getvalue()
+def _first_sentences(text: str, n: int) -> list[str]:
+    """Split text on '. ' boundaries and return up to n cleaned sentences."""
+    if not text:
+        return []
+    parts = [p.strip() for p in text.replace("\n", " ").split(". ") if p.strip()]
+    out: list[str] = []
+    for p in parts[:n]:
+        if not p.endswith("."):
+            p = p + "."
+        out.append(p)
+    return out
 
 
 def _slide4_semaforo(post: dict) -> bytes:
     """
-    Slide 4: Real traffic light — 3 stacked circles (red/yellow/green), only the
-    one matching the post's semáforo state is fully lit. The other two are
-    dim/gray-out, like a real signal.
+    Slide 4: Traffic light + WHY explanation.
+
+    Smaller traffic light at the top half of the slide (3 stacked lights, only
+    the one matching the post's semáforo lit with a halo). Below the light,
+    a clear state label, followed by 3 bullet points sourced from the
+    angle_reasoning that explain WHY the market signal is what it is.
     """
     semaforo = post.get("semaforo", "neutral")
     accent   = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
-    headline = (post.get("headline") or "").strip()
-    hero_url = post.get("card_image_url")
+    flags    = post.get("compliance_flags") or {}
+    reasoning = (flags.get("angle_reasoning") or "").strip()
 
-    # Stronger darkening so the colored circle is unambiguous
+    # Blurred-hero background so the focus is the traffic light
     img, draw = _base_slide("SEÑAL DE MERCADO", 4, total=5, accent=accent,
-                            hero_url=hero_url, darkness=0.78)
+                            hero_url=post.get("card_image_url"), darkness=0.80)
     cx = W // 2
 
-    # ── Housing: tall rounded rectangle (the traffic light body) ────────────
-    housing_w  = 360
-    housing_h  = 920
+    # ── Traffic light housing (smaller — top portion of slide) ──────────────
+    housing_w  = 280
+    housing_h  = 700
     housing_x  = cx - housing_w // 2
-    housing_y  = 280
+    housing_y  = 240
     draw.rounded_rectangle(
         [housing_x, housing_y, housing_x + housing_w, housing_y + housing_h],
-        radius=60,
+        radius=48,
         fill=(18, 22, 32),
         outline=(60, 70, 90),
-        width=6,
+        width=5,
     )
 
-    # ── Three lights, stacked vertically ────────────────────────────────────
-    light_r       = 130
-    inner_gap_y   = 70                                  # padding from housing edges
+    # ── Three lights ────────────────────────────────────────────────────────
+    light_r       = 100
+    inner_gap_y   = 60
     span_y        = housing_h - 2 * inner_gap_y
     slot_h        = span_y / 3
     states_order  = [
@@ -479,15 +531,13 @@ def _slide4_semaforo(post: dict) -> bytes:
         ("amarillo", ACCENT_YELLOW, "PRECAUCIÓN"),
         ("verde",    ACCENT_GREEN,  "MERCADO ALCISTA"),
     ]
-    # Neutral maps to "no light on" — handled below
     active_state = semaforo if semaforo in ("rojo", "amarillo", "verde") else None
 
     for i, (state, color, _label) in enumerate(states_order):
         ly = int(housing_y + inner_gap_y + slot_h * (i + 0.5))
         is_on = (state == active_state)
         if is_on:
-            # Outer glow halo
-            for halo_r, halo_alpha in [(light_r + 36, 32), (light_r + 22, 56), (light_r + 10, 90)]:
+            for halo_r, halo_alpha in [(light_r + 32, 30), (light_r + 18, 56), (light_r + 8, 100)]:
                 halo = Image.new("RGBA", (W, H), (0, 0, 0, 0))
                 hd   = ImageDraw.Draw(halo)
                 hd.ellipse(
@@ -497,12 +547,10 @@ def _slide4_semaforo(post: dict) -> bytes:
                 img_rgba = img.convert("RGBA")
                 img      = Image.alpha_composite(img_rgba, halo).convert("RGB")
                 draw     = ImageDraw.Draw(img)
-            # Lit bulb
             draw.ellipse(
                 [cx - light_r, ly - light_r, cx + light_r, ly + light_r],
                 fill=color, outline=WHITE, width=3,
             )
-            # Inner highlight (gives a "glass bulb" feel)
             hl_r = light_r // 2
             hl_x = cx - light_r // 3
             hl_y = ly - light_r // 3
@@ -510,42 +558,89 @@ def _slide4_semaforo(post: dict) -> bytes:
             hd2 = ImageDraw.Draw(highlight)
             hd2.ellipse(
                 [hl_x - hl_r, hl_y - hl_r, hl_x + hl_r, hl_y + hl_r],
-                fill=(255, 255, 255, 60),
+                fill=(255, 255, 255, 55),
             )
             img_rgba = img.convert("RGBA")
             img      = Image.alpha_composite(img_rgba, highlight).convert("RGB")
             draw     = ImageDraw.Draw(img)
         else:
-            # Off — dim, dark version of the color
             dim_color = (color[0] // 5, color[1] // 5, color[2] // 5)
             draw.ellipse(
                 [cx - light_r, ly - light_r, cx + light_r, ly + light_r],
                 fill=dim_color, outline=(70, 80, 100), width=3,
             )
 
-    # ── Label below the traffic light ────────────────────────────────────────
+    # ── State label below the light ─────────────────────────────────────────
     label_text_map = {
         "verde":    "MERCADO ALCISTA",
         "amarillo": "PRECAUCIÓN",
         "rojo":     "MERCADO BAJISTA",
         "neutral":  "SEÑAL NEUTRAL",
     }
-    label_color   = SEMAFORO_COLOR.get(semaforo, GRAY_300)
-    state_label   = label_text_map.get(semaforo, "SEÑAL NEUTRAL")
-    state_font    = _bold(56)
-    sbb           = draw.textbbox((0, 0), state_label, font=state_font)
-    sw            = sbb[2] - sbb[0]
-    state_y       = housing_y + housing_h + 50
-    draw.text((cx - sw // 2, state_y), state_label, font=state_font, fill=label_color)
+    state_label = label_text_map.get(semaforo, "SEÑAL NEUTRAL")
+    state_font  = _bold(48)
+    sbb         = draw.textbbox((0, 0), state_label, font=state_font)
+    sw          = sbb[2] - sbb[0]
+    state_y     = housing_y + housing_h + 36
+    draw.text((cx - sw // 2, state_y), state_label, font=state_font, fill=accent)
 
-    # Small headline context under the label, muted
-    ctx_y = state_y + 90
-    ctx_f = _regular(32)
-    ctx_lines = _wrap_text(draw, headline, ctx_f, W - 160)
-    if len(ctx_lines) > 2:
-        ctx_lines = ctx_lines[:2]
-        ctx_lines[-1] = ctx_lines[-1].rstrip(".,;:") + "…"
-    _draw_text_block(draw, ctx_lines, ctx_f, GRAY_300, ctx_y, cx, 8)
+    # ── "¿POR QUÉ?" header + bullets ────────────────────────────────────────
+    why_y    = state_y + 90
+    why_font = _bold(26)
+    why_text = "¿POR QUÉ?"
+    wbb      = draw.textbbox((0, 0), why_text, font=why_font)
+    ww       = wbb[2] - wbb[0]
+    # Header pill
+    why_pad  = 26
+    draw.rounded_rectangle(
+        [cx - ww // 2 - why_pad, why_y - 12, cx + ww // 2 + why_pad, why_y + why_font.size + 12],
+        radius=28, fill=BG_CARD, outline=accent, width=2,
+    )
+    draw.text((cx - ww // 2, why_y - 2), why_text, font=why_font, fill=accent)
+
+    # Bullets sourced from angle_reasoning (split on sentence boundaries)
+    bullets = _first_sentences(reasoning, n=3)
+    if not bullets:
+        bullets = ["Análisis editorial en curso."]
+
+    bullet_font = _semi(30)
+    bullet_y    = why_y + why_font.size + 50
+    pad_left    = 100
+    text_pad    = 30
+    avail_w     = W - pad_left - 40   # right margin
+
+    for bullet in bullets:
+        # Wrap long bullets
+        wrap_lines = _wrap_text(draw, bullet, bullet_font, avail_w - text_pad)
+        if len(wrap_lines) > 3:
+            wrap_lines = wrap_lines[:3]
+            wrap_lines[-1] = wrap_lines[-1].rstrip(".,;:") + "…"
+
+        # Don't run off the bottom — leave room for brand bar
+        block_h = len(wrap_lines) * (bullet_font.size + 12)
+        if bullet_y + block_h > H - 110:
+            break
+
+        # Accent dot
+        dot_r  = 9
+        dot_y  = bullet_y + bullet_font.size // 2 + 2
+        draw.ellipse([pad_left - 2, dot_y - dot_r,
+                      pad_left - 2 + dot_r * 2, dot_y + dot_r], fill=accent)
+
+        # Bullet text
+        for i, line in enumerate(wrap_lines):
+            draw.text((pad_left + text_pad, bullet_y + i * (bullet_font.size + 12)),
+                      line, font=bullet_font, fill=WHITE)
+
+        bullet_y += block_h + 22
+
+    # Bottom brand bar
+    draw.rectangle([0, H - 80, W, H], fill=GRAY_800)
+    handle = "@WaCapital • Finanzas que importan"
+    hf     = _regular(26)
+    hbb    = draw.textbbox((0, 0), handle, font=hf)
+    hw     = hbb[2] - hbb[0]
+    draw.text(((W - hw) // 2, H - 55), handle, font=hf, fill=GRAY_500)
 
     buf = BytesIO()
     img.save(buf, "JPEG", quality=90)
@@ -642,21 +737,59 @@ def generate_carousel(post: dict) -> list[bytes]:
     card's built-in headline text never bleeds through and competes with the
     slide's own copy.
     """
-    flags    = post.get("compliance_flags") or {}
-    hook     = (flags.get("angle_hook")        or (post.get("headline") or "Sin titulo")).strip()
-    angle    = (flags.get("angle_reasoning")   or "Análisis en curso.").strip()
-    semaforo = post.get("semaforo", "neutral")
-    accent   = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
+    flags     = post.get("compliance_flags") or {}
+    headline  = (post.get("headline")          or "Sin título").strip()
+    hook      = (flags.get("angle_hook")       or headline).strip()
+    angle     = (flags.get("angle_reasoning")  or "Análisis en curso.").strip()
+    semaforo  = post.get("semaforo", "neutral")
+
+    # For slide 3 we split the analysis into a punchy first sentence (TITLE)
+    # and the remainder (SUBTITLE), Luxury Mindset-style.
+    angle_parts = _first_sentences(angle, n=4)
+    if not angle_parts:
+        angle_title    = angle
+        angle_subtitle = ""
+    elif len(angle_parts) == 1:
+        angle_title    = angle_parts[0]
+        angle_subtitle = ""
+    else:
+        angle_title    = angle_parts[0]
+        angle_subtitle = " ".join(angle_parts[1:3])     # next 1-2 sentences
+
+    # Pills for slide 2 / 3 bottom takeaway. Short, brand-y, all-caps.
+    pill_takeaway_dato = {
+        "verde":    "OPORTUNIDAD EN MOVIMIENTO",
+        "amarillo": "ATENCIÓN AL MERCADO",
+        "rojo":     "RIESGO ELEVADO",
+        "neutral":  "DATO QUE IMPORTA",
+    }.get(semaforo, "DATO QUE IMPORTA")
+
+    pill_takeaway_analisis = {
+        "verde":    "EL MERCADO PIDE ATENCIÓN",
+        "amarillo": "LEER ENTRE LÍNEAS",
+        "rojo":     "PRECAUCIÓN OBLIGATORIA",
+        "neutral":  "ANÁLISIS CONTEXTUAL",
+    }.get(semaforo, "ANÁLISIS CONTEXTUAL")
 
     slides: list[bytes] = []
     builders = [
         lambda: _slide1_hook(post),
-        lambda: _slide_text(2, "EL DATO CLAVE",
-                            "El número que importa",
-                            hook, accent, post),
-        lambda: _slide_text(3, "EL ANÁLISIS",
-                            "¿Qué significa esto?",
-                            angle, accent, post),
+        lambda: _slide_luxury(
+            slide_num=2,
+            label="EL DATO",
+            title=hook,
+            subtitle="",                  # hook is already complete; no subtitle
+            bottom_pill=pill_takeaway_dato,
+            post=post,
+        ),
+        lambda: _slide_luxury(
+            slide_num=3,
+            label="EL ANÁLISIS",
+            title=angle_title,
+            subtitle=angle_subtitle,
+            bottom_pill=pill_takeaway_analisis,
+            post=post,
+        ),
         lambda: _slide4_semaforo(post),
         lambda: _slide5_cta(post),
     ]
