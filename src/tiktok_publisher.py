@@ -1,6 +1,13 @@
 """
 TikTok publisher -- Bloque 8c (Photo Carousel).
 
+Title sanitization:
+  TikTok's `title` field for PHOTO posts is more restrictive than the
+  `description` field. Emojis, mid-word truncation, or trailing partial
+  multi-byte chars trigger HTTP 400 invalid_params. We build `title` from
+  the post headline (no caption emojis), strip emojis, and truncate at the
+  closest word boundary at or before 90 chars.
+
 Per cycle:
   1. Query pulse_posts WHERE status='approved' AND carousel_urls present
      AND not yet published to TikTok.
@@ -36,6 +43,7 @@ PHOTO field naming (different from VIDEO):
   TikTok only accepts JPEG or WEBP images (PNG is rejected with invalid_params).
 """
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -225,6 +233,52 @@ def _build_caption(post: dict) -> str:
     return caption[:MAX_CAPTION_LEN]
 
 
+# Title sanitization for TikTok PHOTO posts
+#
+# TikTok rejects titles with emojis, mid-word truncation, or partial
+# multi-byte UTF-8 sequences (HTTP 400 invalid_params). Build a safe title
+# from the headline: strip emojis, collapse whitespace, truncate at the
+# nearest word boundary at or before max_len chars.
+
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"   # symbols & pictographs, transport, supplemental
+    "\U00002600-\U000027BF"   # misc symbols, dingbats
+    "\U0001F000-\U0001F02F"   # mahjong, dominoes
+    "‍"                  # zero-width joiner
+    "️"                  # variation selector
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def _make_safe_title(text: str, max_len: int = 90) -> str:
+    """
+    Return a TikTok-safe short title from `text`:
+      - strip emojis
+      - collapse whitespace
+      - truncate at the nearest word boundary at or before max_len
+      - fall back to a brand-safe default if input is empty after cleanup
+    """
+    if not text:
+        return "WaCapital · Análisis financiero"
+    # Strip emojis and ZWJ/VS selectors
+    clean = _EMOJI_RE.sub("", text)
+    # Collapse whitespace and trim
+    clean = " ".join(clean.split()).strip()
+    if not clean:
+        return "WaCapital · Análisis financiero"
+    if len(clean) <= max_len:
+        return clean
+    # Truncate at word boundary; prefer a boundary in the last 30% of the
+    # allowance to avoid super-short titles when there's no nearby space.
+    cut = clean[:max_len]
+    last_space = cut.rfind(" ")
+    if last_space >= int(max_len * 0.6):
+        cut = cut[:last_space]
+    return cut.rstrip(" .,;:") + "…"
+
+
 # TikTok API calls
 
 def _post_carousel(
@@ -233,6 +287,7 @@ def _post_carousel(
     photo_urls: list[str],
     caption: str,
     privacy_level: str = "SELF_ONLY",
+    title_source: Optional[str] = None,
 ) -> Optional[str]:
     """
     POST carousel to TikTok Content Posting API.
@@ -253,8 +308,10 @@ def _post_carousel(
         description = "#WaCapital #crypto #finanzas"
         log.warning("tiktok-pub: caption was empty -- using fallback hashtags")
 
-    # Short title: first line of caption, max 90 chars
-    short_title = description.split("\n")[0][:90]
+    # Build a TikTok-safe title (no emojis, word-boundary truncation).
+    # Prefer the headline if provided; fall back to caption's first line.
+    raw_title_source = (title_source or "").strip() or description.split("\n")[0]
+    short_title = _make_safe_title(raw_title_source, max_len=90)
 
     payload = {
         "post_info": {
@@ -501,7 +558,8 @@ def run_one_cycle() -> dict:
 
         # 3. Post to TikTok
         publish_id = _post_carousel(
-            access_token, open_id, carousel_urls, caption, privacy_level
+            access_token, open_id, carousel_urls, caption, privacy_level,
+            title_source=post.get("headline"),
         )
         if not publish_id:
             stats["errors"] += 1
