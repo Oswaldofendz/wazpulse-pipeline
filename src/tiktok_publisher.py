@@ -471,15 +471,27 @@ def run_one_cycle() -> dict:
 
     client = get_client()
 
+    # Filter out posts that already have a TikTok publish at the SQL level.
+    # Previously we fetched the 15 oldest approved posts then filtered with
+    # _already_published in Python — when the table accumulated more than 15
+    # already-published rows, the batch filled up with old publications and
+    # new approvals never appeared in it (publisher silently reported
+    # eligible=0). The SQL-side `is_("...tiktok", "null")` keeps that
+    # behaviour consistent regardless of how many historical publications
+    # are in the table.
     res = (
         client.table("pulse_posts")
         .select("id, headline, copy_tiktok, card_image_url, compliance_flags, semaforo")
         .eq("status", "approved")
+        .is_("compliance_flags->published_platforms->tiktok", "null")
         .order("created_at", desc=False)
         .limit(MAX_PER_CYCLE * 15)
         .execute()
     )
     rows    = res.data or []
+    # Defensive: keep the Python-side filter as a belt-and-suspenders in case
+    # the JSONB path filter doesn't behave exactly as expected on some PostgREST
+    # versions. Cheap and idempotent.
     pending = [r for r in rows if not _already_published(r)]
     stats["eligible"] = len(pending)
 
