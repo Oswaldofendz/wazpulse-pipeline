@@ -251,6 +251,114 @@ def _draw_gradient_overlay(img: Image.Image) -> None:
     img.paste(merged.convert("RGB"))
 
 
+def _draw_hero_dual_logo(img: Image.Image,
+                         entity_a: dict,
+                         entity_b: dict,
+                         separator: str = "VS",
+                         separator_color: tuple = ACCENT_CYAN) -> None:
+    """
+    T-DUAL hero — two brand logos side by side with a separator badge.
+
+    Used for headlines that describe a relationship between two named
+    entities (comparison, M&A, partnership). AI image gen reliably FAILS
+    to render brand identity, so we bypass it entirely and compose the
+    card programmatically from Clearbit/cryptologos logos.
+
+    If a logo URL fetch fails, the entity's display name is rendered in
+    big type inside the panel as a graceful fallback.
+    """
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([(0, 0), (CARD_W, CARD_H)], fill=HERO_DARK)
+
+    # Two panels with a separator zone between them
+    panel_top    = 100
+    panel_bottom = GRADIENT_START - 60               # ~620 with current constants
+    panel_h      = panel_bottom - panel_top
+
+    panel_left_a, panel_right_a = 50,  470
+    panel_left_b, panel_right_b = 610, CARD_W - 50
+
+    # Draw the two light panels
+    for px_l, px_r in ((panel_left_a, panel_right_a), (panel_left_b, panel_right_b)):
+        draw.rounded_rectangle(
+            [(px_l, panel_top), (px_r, panel_bottom)],
+            radius=32,
+            fill=(241, 245, 249),
+        )
+
+    # Place each logo (or display fallback) into its panel
+    for ent, p_left, p_right in (
+        (entity_a, panel_left_a, panel_right_a),
+        (entity_b, panel_left_b, panel_right_b),
+    ):
+        logo     = image_fetcher.fetch(ent.get("logo_url")) if ent.get("logo_url") else None
+        display  = (ent.get("display") or ent.get("id") or "?").strip()
+        cx_panel = (p_left + p_right) // 2
+
+        inner_pad    = 50
+        inner_w      = (p_right - p_left) - inner_pad * 2
+        label_band_h = 56
+        inner_h      = panel_h - inner_pad * 2 - label_band_h - 12
+
+        if logo is not None:
+            fitted = image_fetcher.fit_into(logo, inner_w, inner_h)
+            iw, ih = fitted.size
+            cx = cx_panel - iw // 2
+            cy = panel_top + inner_pad + (inner_h - ih) // 2
+            mask = fitted if fitted.mode == "RGBA" else None
+            img.paste(fitted, (cx, cy), mask)
+        else:
+            # Logo fetch failed — render the display name big in the panel
+            fallback_text = display.upper()[:16]
+            f             = _font_bold(78)
+            fbb           = draw.textbbox((0, 0), fallback_text, font=f)
+            fw            = fbb[2] - fbb[0]
+            fh            = fbb[3] - fbb[1]
+            fx            = cx_panel - fw // 2
+            fy            = panel_top + inner_pad + (inner_h - fh) // 2
+            draw.text((fx, fy), fallback_text, font=f, fill=(30, 41, 59))
+
+        # Display name label at the bottom of the panel
+        lf  = _font_semi(38)
+        lbb = draw.textbbox((0, 0), display, font=lf)
+        lw  = lbb[2] - lbb[0]
+        lx  = cx_panel - lw // 2
+        ly  = panel_bottom - label_band_h + 6
+        draw.text((lx, ly), display, font=lf, fill=(30, 41, 59))
+
+    # Separator badge in the middle (VS / → / +)
+    sep_x_center = (panel_right_a + panel_left_b) // 2
+    sep_y_center = (panel_top + panel_bottom) // 2
+    sep_short    = separator.strip()
+    is_wide      = len(sep_short) > 3
+    sep_font     = _font_bold(58 if is_wide else 96)
+    sbb          = draw.textbbox((0, 0), sep_short, font=sep_font)
+    sw           = sbb[2] - sbb[0]
+    sh           = sbb[3] - sbb[1]
+
+    if is_wide:
+        pad_x = 30
+        pad_y = 22
+        draw.rounded_rectangle(
+            [sep_x_center - sw // 2 - pad_x, sep_y_center - sh // 2 - pad_y,
+             sep_x_center + sw // 2 + pad_x, sep_y_center + sh // 2 + pad_y],
+            radius=40, fill=separator_color,
+        )
+    else:
+        badge_r = 78
+        draw.ellipse(
+            [sep_x_center - badge_r, sep_y_center - badge_r,
+             sep_x_center + badge_r, sep_y_center + badge_r],
+            fill=separator_color,
+        )
+
+    # Center the separator glyph. Compensate for Pillow's textbbox baseline
+    # offset so single chars sit visually centered inside the circle.
+    sx = sep_x_center - sw // 2
+    sy = sep_y_center - sh // 2 - sbb[1]
+    draw.text((sx, sy), sep_short, font=sep_font, fill=(255, 255, 255))
+
+
 def _draw_hero_ai(img: Image.Image, ai: Image.Image) -> None:
     """T1 hero — full-bleed AI image cropped/scaled to fill the entire card."""
     iw, ih = ai.size
@@ -410,6 +518,28 @@ def _render_tier3_subtle(post: dict) -> bytes:
     return _render_with_hero(post, lambda im: _draw_hero_subtle(im, semaforo))
 
 
+# Separator presets for dual-entity templates. The colour matches the news
+# vibe (cyan for neutral matchup, green for value-creating M&A, purple for
+# partnership).
+_DUAL_SEPARATORS = {
+    "comparison_2e":   ("VS",        ACCENT_CYAN),
+    "acquisition_2e":  ("→",         (34, 197, 94)),    # green-500
+    "partnership_2e":  ("+",         (168, 85, 247)),   # purple-500
+    "personnel_2e":    ("→",         (234, 179,  8)),   # yellow-500 — talent move
+}
+
+
+def _render_dual_entity(post: dict, ent_a: dict, ent_b: dict, shape: str) -> bytes:
+    """Render a comparison / acquisition / partnership card with two logos."""
+    separator, color = _DUAL_SEPARATORS.get(shape, ("VS", ACCENT_CYAN))
+    return _render_with_hero(
+        post,
+        lambda im: _draw_hero_dual_logo(im, ent_a, ent_b,
+                                        separator=separator,
+                                        separator_color=color),
+    )
+
+
 # ─── Tier dispatch ──────────────────────────────────────────────────────────
 
 def _resolve_entity(post: dict) -> Optional[dict]:
@@ -423,24 +553,66 @@ def _resolve_entity(post: dict) -> Optional[dict]:
 
 def render(post: dict, *, ai_quality: str = "best") -> bytes:
     """
-    Render entry point. AI image is the GOAL for every card — text-only
-    fallbacks only when both providers fail.
+    Render entry point.
+
+    Dispatch hierarchy (new in v3):
+      1. DUAL-ENTITY shapes (comparison / acquisition / partnership) →
+         render a composed two-logo card. AI cannot render brand identity,
+         so for "Alphabet vs Nvidia" we go straight to logos + VS instead
+         of asking a diffusion model to draw something that will inevitably
+         turn into "generic data center".
+      2. SINGLE-ENTITY with a known logo → prefer Tier 2 (logo card) over
+         Tier 1 (AI) because the logo is deterministic and on-brand. AI is
+         only a good fit when there is no specific brand to render.
+      3. Everything else (macro news, commodity, index, no entity) → AI
+         hero with the existing Pollinations / Imagen flow.
 
     ai_quality:
       "best"  — try Imagen 3 (multi-key) first, then Pollinations.
-                For fresh posts where we want top quality.
-      "cheap" — skip Imagen, use Pollinations only.
-                For backfill of 1500+ historical posts so we don't burn
-                Imagen 3 daily quota; Pollinations is free + unlimited.
-      "none"  — no AI at all (debugging only).
+      "cheap" — skip Imagen, use Pollinations only (for historical backfill).
+      "none"  — no AI at all (debugging).
     """
-    entity = _resolve_entity(post)
+    headline = (post.get("headline") or "").strip()
+    shape    = entity_detector.detect_news_shape(headline)
+    entities = shape.get("entities") or []
 
-    # Tier 1: AI hero (the default). Provider chosen by ai_quality.
+    # ── 1. Dual-entity composed templates (no AI) ──────────────────────────
+    if shape["shape"] in _DUAL_SEPARATORS and len(entities) >= 2:
+        ent_a, ent_b = entities[0], entities[1]
+        try:
+            log.info("[dual] shape=%s entities=%s/%s",
+                     shape["shape"], ent_a["id"], ent_b["id"])
+            return _render_dual_entity(post, ent_a, ent_b, shape["shape"])
+        except Exception as e:
+            log.warning("[dual] render failed, falling back: %s", e)
+
+    # Resolve single entity for the rest of the dispatch (use detected first,
+    # otherwise the editorial-time asset_affected hint).
+    entity = entities[0] if entities else _resolve_entity(post)
+
+    # ── 2. Single entity with logo → prefer Tier 2 (deterministic, on-brand)
+    # Skip this preference for commodities/indices where the "logo" is None
+    # anyway, and for posts that explicitly want AI for personnel/launches.
+    if (entity
+        and entity.get("logo_url")
+        and entity.get("type") == "company"
+        and shape["shape"] in ("single_entity", "product_launch_1e", "personnel_1e")):
+        logo = image_fetcher.fetch(entity["logo_url"])
+        if logo is not None:
+            try:
+                log.info("[t2-first] entity=%s logo card (shape=%s)",
+                         entity["id"], shape["shape"])
+                return _render_tier2_logo(post, entity, logo)
+            except Exception as e:
+                log.warning("[t2-first] render failed, falling back to T1/T3: %s", e)
+        else:
+            log.warning("[t2-first] entity=%s logo fetch returned None — falling back to T1", entity["id"])
+
+    # ── 3. Tier 1: AI hero (default for macro news and when T2 didn't apply)
     if ai_quality != "none":
         try_imagen = (ai_quality == "best")
         prompt = ai_image_generator.craft_prompt(
-            headline=post.get("headline") or "",
+            headline=headline,
             hook=(post.get("compliance_flags") or {}).get("angle_hook") or "",
             entity=entity,
         )
