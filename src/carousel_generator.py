@@ -287,20 +287,23 @@ def _base_slide(label: str, slide_num: int, total: int = 5,
 
 def _slide1_hook(post: dict) -> bytes:
     """
-    Slide 1: the WaCapital card, full-bleed, no text overlay.
+    Slide 1: the WaCapital card, presented intact on a 9:16 canvas.
 
-    The card itself already contains everything we want users to see:
-    the AI hero image, the headline, the cyan hook, the WaCapital wordmark
-    at the bottom. Previously we ADDED another headline overlay on top of
-    the card, which produced visible double-text (card headline + slide
-    headline both saying the same thing). Fixed here by just pasting the
-    card as the slide image and trusting the card design.
+    Previously we cover-fit the 1080×1350 card onto a 1080×1920 slide, which
+    scaled it up 1.42× and cropped 227 px off each side — chopping the start
+    and end of the headline text rendered into the card. Result: viewers saw
+    truncated text like "ar firme ante la decisión d…" instead of the full
+    "Dólar firme ante la decisión de la Fed".
+
+    Fix: contain-fit (letterbox) — keep the card at its native 1080×1350,
+    center it vertically on the 1920 canvas, and fill the top + bottom bands
+    with brand-styled dark zones (logo top-left + slide #, brand handle
+    bottom). Nothing in the card is ever cropped.
     """
     card_url = post.get("card_image_url")
     img      = Image.new("RGB", (W, H), BG)
 
     if not card_url:
-        # Fallback: no card image → render a minimal logo-only slide
         _paste_logo(img, x=(W - 460) // 2, y=(H - 460) // 2, height=460)
         buf = BytesIO()
         img.save(buf, "JPEG", quality=90)
@@ -317,16 +320,48 @@ def _slide1_hook(post: dict) -> bytes:
         img.save(buf, "JPEG", quality=90)
         return buf.getvalue()
 
-    # Cover-fit the card so it fills the slide. The card is 4:5 (1080×1350)
-    # and the slide is 9:16 (1080×1920), so we scale to fill height and crop
-    # whatever sticks out horizontally (very little — only the sides).
-    scale = max(W / card.width, H / card.height)
-    nw, nh = int(card.width * scale), int(card.height * scale)
-    card = card.resize((nw, nh), Image.LANCZOS)
-    left = max(0, (nw - W) // 2)
-    top  = max(0, (nh - H) // 2)
-    card = card.crop((left, top, left + W, top + H))
-    img.paste(card, (0, 0))
+    # Contain-fit (letterbox): scale to fit BOTH dimensions, never crop.
+    # For the standard 1080×1350 card on a 1080×1920 canvas this is a no-op
+    # in width — the card fits exactly and we get equal dark bands above
+    # and below it.
+    scale = min(W / card.width, H / card.height)
+    nw, nh = max(1, int(card.width * scale)), max(1, int(card.height * scale))
+    if (nw, nh) != card.size:
+        card = card.resize((nw, nh), Image.LANCZOS)
+
+    left = (W - nw) // 2
+    top  = (H - nh) // 2
+    img.paste(card, (left, top))
+
+    draw = ImageDraw.Draw(img)
+
+    # ── Top branded band ───────────────────────────────────────────────────
+    semaforo = post.get("semaforo", "neutral")
+    accent   = SEMAFORO_COLOR.get(semaforo, ACCENT_CYAN)
+    # Thin accent strip at the very top
+    draw.rectangle([0, 0, W, 6], fill=accent)
+    # Logo in the top band (only if there's room above the card)
+    if top >= 90:
+        logo_h = min(72, top - 16)
+        _paste_logo(img, x=36, y=max(18, (top - logo_h) // 2), height=logo_h)
+        # Slide indicator on the right
+        sn = "1/5"
+        sf = _regular(28)
+        sbb = draw.textbbox((0, 0), sn, font=sf)
+        sw = sbb[2] - sbb[0]
+        draw.text((W - 50 - sw, max(28, (top - sf.size) // 2)),
+                  sn, font=sf, fill=GRAY_300)
+
+    # ── Bottom branded band ────────────────────────────────────────────────
+    bottom_band_top = top + nh
+    bottom_band_h   = H - bottom_band_top
+    if bottom_band_h >= 50:
+        handle = "@WaCapital · Finanzas que importan"
+        hf     = _regular(28)
+        hbb    = draw.textbbox((0, 0), handle, font=hf)
+        hw     = hbb[2] - hbb[0]
+        hy     = bottom_band_top + max(8, (bottom_band_h - hf.size) // 2)
+        draw.text(((W - hw) // 2, hy), handle, font=hf, fill=GRAY_300)
 
     buf = BytesIO()
     img.save(buf, "JPEG", quality=90)
@@ -441,27 +476,46 @@ def _slide_luxury(slide_num: int, label: str, title: str, subtitle: str,
     ul_half = max(80, min(220, W // 4))
     draw.rectangle([W // 2 - ul_half, ul_y, W // 2 + ul_half, ul_y + underline_h], fill=accent)
 
-    # Draw subtitle
+    # Draw subtitle. Track the actual bottom of the rendered text so the
+    # takeaway pill below can be positioned adaptively (instead of being
+    # pinned to H-200 which gets overlapped when title+subtitle run long).
     if subtitle_lines:
         sub_font  = _semi(subtitle_size)
         sub_y     = ul_y + underline_h + subtitle_gap - 12
         _draw_text_block(draw, subtitle_lines, sub_font, GRAY_300, sub_y, W // 2, 10)
+        body_end_y = sub_y + len(subtitle_lines) * (subtitle_size + 14)
+    else:
+        body_end_y = ul_y + underline_h + 8
 
-    # ── 6. Bottom takeaway pill ────────────────────────────────────────────
+    # ── 6. Bottom takeaway pill (adaptive placement) ───────────────────────
+    # Place pill BELOW the actual body block (with breathing room), but no
+    # lower than its default sweet spot (H-200) and never overlapping the
+    # bottom brand bar (which is at H-80 down to H).
     if bottom_pill:
-        bp_font = _bold(28)
-        bp_bb   = draw.textbbox((0, 0), bottom_pill.upper(), font=bp_font)
-        bp_w    = bp_bb[2] - bp_bb[0]
-        bp_x    = (W - bp_w) // 2
-        bp_y    = H - 200
+        bp_font  = _bold(28)
+        bp_bb    = draw.textbbox((0, 0), bottom_pill.upper(), font=bp_font)
+        bp_w     = bp_bb[2] - bp_bb[0]
+        bp_x     = (W - bp_w) // 2
         bp_pad_x = 32
         bp_pad_y = 18
+        pill_h   = bp_font.size + 2 * bp_pad_y
+
+        # Default y is H-200. If the body extends past where the pill would
+        # start, push the pill down to sit 40px below the body instead.
+        default_y = H - 200
+        min_y     = body_end_y + 40
+        # Hard upper cap: pill must finish at least 16 px above the brand bar
+        # (brand bar starts at H-80).
+        max_y     = (H - 80) - 16 - pill_h
+        bp_y      = min(max(default_y, min_y), max_y)
+
         draw.rounded_rectangle(
-            [bp_x - bp_pad_x, bp_y - bp_pad_y,
-             bp_x + bp_w + bp_pad_x, bp_y + bp_font.size + bp_pad_y],
+            [bp_x - bp_pad_x, bp_y,
+             bp_x + bp_w + bp_pad_x, bp_y + pill_h],
             radius=34, fill=BG_CARD, outline=accent, width=2,
         )
-        draw.text((bp_x, bp_y - 4), bottom_pill.upper(), font=bp_font, fill=WHITE)
+        draw.text((bp_x, bp_y + bp_pad_y - 4), bottom_pill.upper(),
+                  font=bp_font, fill=WHITE)
 
     # ── 7. Bottom brand bar ────────────────────────────────────────────────
     draw.rectangle([0, H - 80, W, H], fill=GRAY_800)
@@ -603,15 +657,17 @@ def _slide4_semaforo(post: dict) -> bytes:
     if not bullets:
         bullets = ["Análisis editorial en curso."]
 
-    bullet_font = _semi(30)
-    bullet_y    = why_y + why_font.size + 50
-    pad_left    = 100
-    text_pad    = 30
-    avail_w     = W - pad_left - 40   # right margin
+    bullet_font  = _semi(28)            # slightly smaller — more breathing room
+    bullet_y     = why_y + why_font.size + 50
+    pad_left     = 80                   # left edge of bullet column (dot lives here)
+    text_pad     = 40                   # gap between dot and start of text
+    right_margin = 80                   # safety margin from canvas right edge
+    text_x       = pad_left + text_pad
+    avail_w      = W - text_x - right_margin   # 1080 - 120 - 80 = 880 max line width
 
     for bullet in bullets:
-        # Wrap long bullets
-        wrap_lines = _wrap_text(draw, bullet, bullet_font, avail_w - text_pad)
+        # Wrap long bullets to the actual available pixel width for text.
+        wrap_lines = _wrap_text(draw, bullet, bullet_font, avail_w)
         if len(wrap_lines) > 3:
             wrap_lines = wrap_lines[:3]
             wrap_lines[-1] = wrap_lines[-1].rstrip(".,;:") + "…"
@@ -621,15 +677,15 @@ def _slide4_semaforo(post: dict) -> bytes:
         if bullet_y + block_h > H - 110:
             break
 
-        # Accent dot
+        # Accent dot (vertically aligned with the first line of text)
         dot_r  = 9
         dot_y  = bullet_y + bullet_font.size // 2 + 2
-        draw.ellipse([pad_left - 2, dot_y - dot_r,
-                      pad_left - 2 + dot_r * 2, dot_y + dot_r], fill=accent)
+        draw.ellipse([pad_left, dot_y - dot_r,
+                      pad_left + dot_r * 2, dot_y + dot_r], fill=accent)
 
-        # Bullet text
+        # Bullet text — each wrapped line stacked under the previous.
         for i, line in enumerate(wrap_lines):
-            draw.text((pad_left + text_pad, bullet_y + i * (bullet_font.size + 12)),
+            draw.text((text_x, bullet_y + i * (bullet_font.size + 12)),
                       line, font=bullet_font, fill=WHITE)
 
         bullet_y += block_h + 22
@@ -684,12 +740,15 @@ def _slide5_cta(post: dict) -> bytes:
     draw.rectangle([cx - 200, y, cx + 200, y + 4], fill=accent)
     y += 60
 
-    # CTA lines
+    # CTA lines. Emoji glyphs like 🔔 don't render in our text font (DejaVu /
+    # Inter Bold) — they show as empty boxes on the rendered slide. So we
+    # spell out the call to action in plain text instead. The @-handle is
+    # the lowercase form that actually matches the TikTok account.
     cta_lines = [
         "Seguinos en TikTok",
-        "@WaCapital",
+        "@wacapital",
         "",
-        "Activa las notificaciones 🔔",
+        "Activa las notificaciones",
         "para no perderte ningún análisis",
     ]
     for line in cta_lines:
