@@ -611,10 +611,13 @@ def render(post: dict, *, ai_quality: str = "best") -> bytes:
     # ── 3. Tier 1: AI hero (default for macro news and when T2 didn't apply)
     if ai_quality != "none":
         try_imagen = (ai_quality == "best")
+        flags  = post.get("compliance_flags") or {}
         prompt = ai_image_generator.craft_prompt(
             headline=headline,
-            hook=(post.get("compliance_flags") or {}).get("angle_hook") or "",
+            hook=flags.get("angle_hook") or "",
             entity=entity,
+            angle_reasoning=flags.get("angle_reasoning") or "",
+            strength=flags.get("angle_strength") or 3,
         )
         log.info("[tier1] generating AI image (entity=%s, quality=%s)",
                  entity["id"] if entity else "-", ai_quality)

@@ -209,9 +209,27 @@ def generate(prompt: str, *, try_imagen: bool = True, seed: Optional[int] = None
 
 # ─── Prompt crafting ────────────────────────────────────────────────────────
 
+# Base style tail — used for strength < 4 posts (most of the volume).
+# Tuned for Pollinations `flux-realism`: lens spec, lighting, color grading,
+# magazine reference. Anti-text rules kept identical (these are non-negotiable
+# because the text overlay is composed afterwards in Pillow).
 _STYLE_TAIL = (
-    "editorial photography, cinematic dramatic lighting, photorealistic, hyper-detailed, "
-    "8k, sharp focus, vertical 9:16 composition, "
+    "editorial photography, shot on 85mm lens, dramatic rim lighting, "
+    "photorealistic, cinematic color grading, deep contrast, sharp detail, "
+    "vertical 1080x1350 composition, professional finance magazine aesthetic, "
+    "ABSOLUTELY no text, no letters, no readable writing, no captions, no labels, "
+    "no logos with text, no signs, no numbers, no watermark"
+)
+
+# Rich style tail — reserved for strength >= 4 posts (the 4-5 star news that
+# define the brand). Heavier descriptors trade ~3-5s of extra generation time
+# for noticeably better composition. Magazine references chosen to anchor the
+# model on a recognizable editorial style.
+_STYLE_TAIL_RICH = (
+    "award-winning editorial photography, shot on 85mm lens at f/1.4, "
+    "dramatic rim lighting with deep shadows, photorealistic ultra-detailed, "
+    "cinematic color grading, rich contrast, magazine cover composition, "
+    "vertical 1080x1350 framing, Bloomberg Businessweek / Vanity Fair aesthetic, "
     "ABSOLUTELY no text, no letters, no readable writing, no captions, no labels, "
     "no logos with text, no signs, no numbers, no watermark"
 )
@@ -770,17 +788,117 @@ _SCENE_TEMPLATES: dict[tuple, str] = {
     ('person', 'person'):    'split portrait of {0} and {1}, dramatic tension',
 }
 
-# Diverse fallback scenes — rotated by hash so no two posts share the same generic image
+# Diverse fallback scenes — rotated by hash so no two posts share the same generic image.
+# Reworked for flux-realism: each entry is now a cinematic scene with explicit
+# camera/lighting cues. Grouped by mood (markets / money / macro / crisis /
+# tech / global / digital) so the rotation pulls from varied visual registers
+# instead of always landing on "trading floor red screens".
 _GENERIC_FALLBACKS = [
-    "dramatic financial market trading floor, red and green screens, intense traders, cinematic",
-    "global economy concept, world map with financial data flows, glowing connections",
-    "Wall Street at night, NYSE building, neon lights reflecting on wet pavement",
-    "abstract market crash and recovery, crashing red charts turning green, dramatic light",
-    "central bank boardroom meeting, financial decision makers, tension in the air",
-    "digital financial network visualization, data streams, economic power concept",
-    "stock exchange opening bell ceremony, traders celebrating, confetti and screens",
-    "global trade routes, cargo ships on ocean, satellite view, economic interdependence",
+    # ── Markets & trading ───────────────────────────────────────────────────
+    "dramatic trading floor at golden hour, traders silhouetted against giant glowing market screens, intense focused atmosphere, cinematic wide shot",
+    "Wall Street bull statue in dramatic morning fog, golden sunlight breaking through skyscrapers, low-angle hero composition",
+    "stock exchange opening bell ceremony shot from behind the bell ringer, traders cheering in soft focus, motion blur and confetti, dramatic backlight",
+    "abstract candlestick chart patterns floating in dark space, dramatic neon green and red glow, cinematic depth",
+
+    # ── Money & currency ────────────────────────────────────────────────────
+    "stacks of crisp banknotes arranged in artistic composition, dramatic side-lighting casting long shadows, dark velvet background, macro detail",
+    "golden coins cascading in slow motion through a beam of dramatic light, soft bokeh background, luxurious finance aesthetic",
+    "close-up of a banker's hands sliding documents across a polished mahogany desk, dramatic window light, cinematic shallow depth of field",
+
+    # ── Macro / policy ──────────────────────────────────────────────────────
+    "empty central bank boardroom shot from low angle, leather chairs around a long table, dramatic light streaming through tall windows, tension implied",
+    "podium in an empty press conference hall, microphones lined up, dramatic spotlights, anticipation atmosphere, wide cinematic shot",
+    "dramatic financial district skyscrapers shot from the ground at twilight, lit windows forming a vertical grid, vertiginous perspective",
+
+    # ── Crisis / drama ──────────────────────────────────────────────────────
+    "stormy sky over financial district at sunset, dramatic red clouds rolling in, foreboding atmosphere, wide cinematic shot",
+    "rain-soaked Wall Street pavement at night, neon reflections, lone figure in trench coat, film noir mood",
+
+    # ── Tech / AI / future ──────────────────────────────────────────────────
+    "abstract neural network glowing in dark space, data nodes connected by light streams, blue-purple palette, hyper-detailed",
+    "futuristic data center server racks vanishing into perspective, glowing LED indicators, dramatic backlight, cool tones",
+
+    # ── Global trade ────────────────────────────────────────────────────────
+    "massive cargo ships at international port at dramatic sunset, towering cranes silhouetted, golden hour palette, wide cinematic frame",
+    "abstract globe with glowing trade routes connecting major cities, dark space backdrop, blue and amber light, cinematic",
+
+    # ── Crypto / digital assets ─────────────────────────────────────────────
+    "abstract digital coin floating in a beam of dramatic light, dark cyberpunk backdrop with blue and gold accents, slight motion blur",
+    "blockchain network visualization, glowing hexagonal nodes connected by streams of light, futuristic abstract, dramatic depth",
 ]
+
+
+# ─── Action / tone modifiers from angle_reasoning ───────────────────────────
+#
+# The LLM's `angle_reasoning` carries editorial tone that the headline alone
+# rarely has — direction (rises/falls), emotion (panic/celebration), action
+# (acquires/warns/regulates). Inject 1 short modifier into the scene when we
+# match, otherwise omit silently. Order matters: stronger signals first so the
+# first match wins.
+_ACTION_MAP: list[tuple[_re.Pattern, str]] = [
+    # ── Crash / fall / panic ────────────────────────────────────────────────
+    (_re.compile(r'\b(crash(es|ed)?|plunge[sd]?|tumble[sd]?|collaps[a-z]+|sink[sd]?)\b'
+                 r'|\b(desploma[a-z]*|hunde[a-z]*|colaps[a-z]*|caída[a-z]*|crisis)\b', _re.I),
+     "panic atmosphere, red trading screens, traders in shock, dramatic crash mood"),
+    (_re.compile(r'\b(fall[sing]*|drop[psing]*|slip[psing]*|losses?|bear[a-z]*)\b'
+                 r'|\b(cae|baja[a-z]*|pierde|pérdid[a-z]*|bajista)\b', _re.I),
+     "descending energy, downward motion, dim cool palette, somber mood"),
+
+    # ── Rally / surge / celebration ─────────────────────────────────────────
+    (_re.compile(r'\b(soar[sing]*|surge[sd]?|rally[a-z]*|jump[psing]*|skyrocket[a-z]*|breakthrough)\b'
+                 r'|\b(salta[a-z]*|repunta[a-z]*|dispara[a-z]*|récord|máximo)\b', _re.I),
+     "celebration atmosphere, green ascending screens, traders cheering, dramatic golden light"),
+    (_re.compile(r'\b(rise[sn]?|gain[sing]*|climb[a-z]*|bullish|outperform[a-z]*|beat[sing]*)\b'
+                 r'|\b(sube|gana|alza|supera|optimist[a-z]*|alcista)\b', _re.I),
+     "rising energy, upward motion, warm bright palette, optimistic mood"),
+
+    # ── M&A / partnership ───────────────────────────────────────────────────
+    (_re.compile(r'\b(acqui[a-z]+|merge[a-z]*|buys?|bought|takeover|partnership|deal)\b'
+                 r'|\b(compra|adquiere|fusiona|fusion|alianz[a-z]*|acuerdo)\b', _re.I),
+     "boardroom handshake, signing documents, formal corporate atmosphere"),
+
+    # ── Regulation / approval / ban ─────────────────────────────────────────
+    (_re.compile(r'\b(approve[sd]?|approval|grant[sed]?|legalize[a-z]*|regulator[a-z]*)\b'
+                 r'|\b(aprueba[a-z]*|aprobad[a-z]*|legaliza[a-z]*|regul[a-z]+)\b', _re.I),
+     "official document being stamped, gavel and seal, institutional gravitas"),
+    (_re.compile(r'\b(ban[sn]?ed|banning|outlaw|prohibit[a-z]*|reject[sed]?|deni[a-z]+)\b'
+                 r'|\b(prohíbe[a-z]*|prohibici[a-z]*|veta[a-z]*|rechaza[a-z]*)\b', _re.I),
+     "red prohibition seal, blocked path, foreboding institutional atmosphere"),
+
+    # ── Lawsuit / investigation ─────────────────────────────────────────────
+    (_re.compile(r'\b(sue[sd]?|lawsuit|charged?|indict[a-z]*|investigat[a-z]+|fraud)\b'
+                 r'|\b(demand[a-z]+|denunci[a-z]+|investig[a-z]+|fraude)\b', _re.I),
+     "courtroom drama, gavel mid-strike, stacks of legal documents, dramatic shadows"),
+
+    # ── Launch / announcement ───────────────────────────────────────────────
+    (_re.compile(r'\b(launch[sed]?|unveil[sed]?|introduc[ase]+|announce[sd]?|reveal[sed]?)\b'
+                 r'|\b(lanza|presenta|anuncia|revela[a-z]*|estrena[a-z]*)\b', _re.I),
+     "spotlight on stage, dramatic product reveal, anticipation in the air"),
+
+    # ── Warning / threat ────────────────────────────────────────────────────
+    (_re.compile(r'\b(warn[sing]*|threat[en]?[a-z]*|alert[sing]*|risk|danger)\b'
+                 r'|\b(advierte[a-z]*|amenaza[a-z]*|alerta[a-z]*|riesgo|peligro)\b', _re.I),
+     "ominous storm clouds gathering, tense atmosphere, cool dramatic palette"),
+
+    # ── Cut / layoff ────────────────────────────────────────────────────────
+    (_re.compile(r'\b(layoff[s]?|fire[sd]?|cut[s]? jobs|downsiz[a-z]+)\b'
+                 r'|\b(despid[a-z]+|recort[a-z]+ empleo|reestructur[a-z]+)\b', _re.I),
+     "empty corporate offices, abandoned workstations, somber dramatic lighting"),
+]
+
+
+def _action_modifiers(angle_reasoning: str) -> str:
+    """Return the first matching action modifier from the angle text, or ''.
+
+    Kept conservative: at most ONE modifier per scene to avoid prompt bloat
+    and conflicting tone signals (e.g. crash + celebration).
+    """
+    if not angle_reasoning:
+        return ""
+    for pattern, modifier in _ACTION_MAP:
+        if pattern.search(angle_reasoning):
+            return modifier
+    return ""
 
 
 def _extract_subjects(text: str) -> list[tuple[str, str]]:
@@ -827,10 +945,40 @@ def _build_scene(subjects: list[tuple[str, str]], entity, headline: str) -> str:
     return f"{vis1} juxtaposed with {vis2}, dramatic cinematic split composition"
 
 
-def craft_prompt(headline: str, hook: str = "", entity=None) -> str:
+def craft_prompt(
+    headline: str,
+    hook: str = "",
+    entity=None,
+    angle_reasoning: str = "",
+    strength: int = 3,
+) -> str:
+    """
+    Build the image prompt from a news post.
+
+    Backwards-compatible: existing callers that only pass headline/hook/entity
+    keep working because angle_reasoning and strength are optional with sane
+    defaults.
+
+    angle_reasoning:
+      The LLM's analytical reasoning for this post. Used to extract ONE action
+      modifier (panic / celebration / handshake / etc.) that shapes scene tone.
+      Optional — if empty, no modifier is added.
+
+    strength:
+      Editorial strength 1-5 (from the news-angle LLM rating).
+      >=4 → use the richer style tail (Bloomberg/Vanity Fair aesthetic).
+      <4  → use the standard tail. Saves token budget on the long tail of
+            mid-impact posts that don't justify maximum descriptors.
+    """
     combined_text = f"{headline} {hook}".strip()
     subjects = _extract_subjects(combined_text)
     scene    = _build_scene(subjects, entity, headline)
-    parts    = [scene, _STYLE_TAIL]
-    prompt   = ", ".join(parts)
+
+    # Inject ONE action modifier from angle_reasoning if matched.
+    modifier = _action_modifiers(angle_reasoning)
+    if modifier:
+        scene = f"{scene}, {modifier}"
+
+    tail   = _STYLE_TAIL_RICH if strength >= 4 else _STYLE_TAIL
+    prompt = ", ".join([scene, tail])
     return prompt[:PROMPT_MAX]
