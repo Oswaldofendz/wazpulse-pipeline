@@ -106,11 +106,17 @@ def _imagen3(prompt: str, key: str) -> bytes:
 
 def _pollinations(prompt: str, seed: int) -> bytes:
     """Pollinations GET with explicit seed so every post gets a unique image
-    even when the prompt is identical (fixes the server-room repetition bug)."""
+    even when the prompt is identical (fixes the server-room repetition bug).
+
+    Model: flux-realism — photorealistic editorial output, much better for
+    finance content than `turbo` (which was fast but flat). Validated against
+    the Trump+flag editorial test image: faithful subjects, dramatic lighting,
+    no text artifacts.
+    """
     safe = quote(prompt[:PROMPT_MAX])
     url = (
         f"https://image.pollinations.ai/prompt/{safe}"
-        f"?width=1080&height=1350&model=turbo&nologo=true&seed={seed}"
+        f"?width=1080&height=1350&model=flux-realism&nologo=true&seed={seed}"
     )
     resp = requests.get(url, timeout=HTTP_TIMEOUT, headers={
         "User-Agent": "WaCapital-PulseEngine/1.0",
