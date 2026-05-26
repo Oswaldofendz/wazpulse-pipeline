@@ -117,7 +117,11 @@ def _list_active_sources() -> list[dict]:
     res = (
         client.table("pulse_sources_config")
         .select("name, url, category, language, priority")
-        .eq("is_active", True)
+        # PostgREST (Supabase) only accepts lowercase "true"/"false" for boolean
+        # filters. Python True serializes as "True" via supabase-py, which the
+        # current PostgREST rejects silently (returns 0 rows). The lowercase
+        # string forces a correct match.
+        .eq("is_active", "true")
         .order("priority")
         .execute()
     )

@@ -26,12 +26,16 @@ def count_candidates() -> int:
 
 
 def count_sources_active() -> int:
-    """Sanity check: active RSS sources in pulse_sources_config."""
+    """Sanity check: active RSS sources in pulse_sources_config.
+
+    Note: PostgREST needs the lowercase "true" string; see comment in
+    rss_fetcher._list_active_sources.
+    """
     client = get_client()
     res = (
         client.table("pulse_sources_config")
         .select("id", count="exact")
-        .eq("is_active", True)
+        .eq("is_active", "true")
         .limit(1)
         .execute()
     )
