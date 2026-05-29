@@ -38,6 +38,14 @@ PROMPT_MAX   = 480
 
 KEY_COOLDOWN_SEC = 3600
 
+# Imagen 3 / Imagen 4 are NOT in Google AI Studio free tier (validated via
+# probe scripts: GA endpoints return 404, paid models return 429 with
+# `limit: 0`). Until we move to a paid plan or Google opens free image
+# generation, skip the entire Imagen pre-stage so we don't waste a request
+# per cycle and clutter logs with 5 cooldown lines. Flip to True if access
+# changes — code path is preserved intact below.
+_IMAGEN_ENABLED = False
+
 try:
     os.makedirs(CACHE_DIR, exist_ok=True)
 except Exception as e:
@@ -150,10 +158,10 @@ def generate(prompt: str, *, try_imagen: bool = True, seed: Optional[int] = None
             except Exception:
                 pass
 
-    if try_imagen:
+    if try_imagen and _IMAGEN_ENABLED:
         for key in _gemini_keys():
             if _key_on_cooldown(key):
-                log.info("[ai-image] skipping key %s (on cooldown)", _key_label(key))
+                log.debug("[ai-image] skipping key %s (on cooldown)", _key_label(key))
                 continue
             try:
                 png = _imagen3(prompt, key)

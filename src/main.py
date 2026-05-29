@@ -19,7 +19,7 @@ import signal
 import sys
 import time
 
-from . import config, rss_fetcher, editorial_generator, telegram_bot, twitter_publisher, tiktok_publisher
+from . import config, rss_fetcher, editorial_generator, telegram_bot, twitter_publisher, tiktok_publisher, storage_cleanup
 from .supabase_client import count_candidates, count_sources_active
 
 logging.basicConfig(
@@ -141,6 +141,12 @@ def tick(cycle_n):
             _tick_bloque4(cycle_n)
     except Exception as e:
         log.exception("cycle %d failed: %s", cycle_n, e)
+
+    # Daily maintenance — gated internally by pulse_state.storage_cleanup_last_run
+    # so it actually runs at most once every 24h regardless of cycle count.
+    # Safe to call every tick; idempotent and error-swallowing.
+    if config.BLOQUE_ACTUAL >= 5:
+        storage_cleanup.run_if_due()
 
 
 def main():
