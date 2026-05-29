@@ -55,3 +55,43 @@ def get_snapshot() -> dict:
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def get_visual_subject(name: str) -> Optional[dict]:
+    """POST /api/analysis/visual-subject.
+
+    Asks the backend (LLM-backed, with Supabase cache) how to visualize an
+    unknown entity that doesn't match anything in the local _SUBJECTS catalog.
+    Returns the parsed JSON or None on any failure -- callers should fall
+    back to generic visuals when None.
+
+    Example response:
+      {
+        "name": "concentrix",
+        "display": "Concentrix",
+        "description": {
+          "industry": "BPO services",
+          "category": "company",
+          "visual_description": "modern open-plan customer service center, ...",
+          "color_palette": "deep blue and silver"
+        },
+        "cached": true,
+        "provider": "cache"
+      }
+    """
+    if not name or not name.strip():
+        return None
+    try:
+        resp = requests.post(
+            f"{_base()}/api/analysis/visual-subject",
+            json={"name": name.strip()},
+            timeout=HTTP_TIMEOUT_SEC,
+            headers={"Accept": "application/json"},
+        )
+        if resp.status_code != 200:
+            log.debug("visual-subject HTTP %s for %r", resp.status_code, name)
+            return None
+        return resp.json()
+    except Exception as e:
+        log.debug("visual-subject call failed for %r: %s", name, e)
+        return None

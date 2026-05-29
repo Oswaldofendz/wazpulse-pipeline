@@ -895,6 +895,81 @@ _ACTION_MAP: list[tuple[_re.Pattern, str]] = [
 ]
 
 
+# ─── Unknown-entity dynamic discovery (Frente 5) ────────────────────────────
+#
+# When _extract_subjects returns [] AND the editorial entity is also None,
+# we try to find a capitalized noun phrase in the headline and ask the backend
+# how to visualize it. The backend has a persistent Supabase cache, so each
+# entity name only costs one LLM call across the system's lifetime.
+#
+# Why this matters: headlines often name companies we don't have in catalog
+# (Concentrix, Dawn Labs, MARA, niche tickers). Without this, those headlines
+# fall through to the generic _GENERIC_FALLBACKS and look anonymous.
+
+# Words that are capitalized at the start of sentences but aren't entities.
+_PROPER_NOUN_STOPWORDS = frozenset({
+    "The", "A", "An", "This", "That", "These", "Those",
+    "What", "Why", "How", "When", "Where", "Who", "Which",
+    "After", "Before", "While", "During", "Since", "Until",
+    "Wall", "Street",  # these come with " Street"/" St" follow-ons; handled in regex post-filter
+    "BREAKING", "JUST", "ALERT", "ATTENTION", "URGENT",
+    "I", "We", "You", "They", "He", "She", "It",
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+    "January", "February", "March", "April", "May", "June", "July",
+    "August", "September", "October", "November", "December",
+    "Q1", "Q2", "Q3", "Q4",
+})
+
+# Matches capitalized phrases: word starting with uppercase letter + optional
+# 1-3 additional capitalized words. Requires the first word to be >= 3 chars
+# to avoid matching abbreviations like "S&P" (which is already in catalog).
+_CAPITALIZED_PHRASE = _re.compile(
+    r'\b([A-Z][a-zA-Z0-9]{2,}(?:\s+[A-Z][a-zA-Z0-9]+){0,3})\b'
+)
+
+# In-memory cache so the SAME process doesn't re-hit the backend for the same
+# entity twice in a session. Backend also caches in Supabase, but this saves
+# the HTTP round trip during the lifetime of one Railway deploy.
+_visual_subject_local_cache: dict[str, Optional[dict]] = {}
+
+
+def _extract_unknown_entity_candidate(headline: str) -> Optional[str]:
+    """Pull the most prominent capitalized noun phrase from `headline`.
+    Returns the candidate string, or None if nothing usable was found."""
+    if not headline:
+        return None
+    matches = _CAPITALIZED_PHRASE.findall(headline)
+    for raw in matches:
+        first_word = raw.split()[0]
+        if first_word in _PROPER_NOUN_STOPWORDS:
+            continue
+        # Skip if already matched by catalog — caller should not reach here
+        # in that case, but belt-and-suspenders.
+        if _SUBJECTS and any(p.search(raw) for p, _, _ in _SUBJECTS):
+            continue
+        return raw.strip()
+    return None
+
+
+def _lookup_visual_subject(name: str) -> Optional[dict]:
+    """In-memory cached wrapper around wastake_client.get_visual_subject."""
+    key = name.strip().lower()
+    if key in _visual_subject_local_cache:
+        return _visual_subject_local_cache[key]
+    # Lazy import to avoid a hard dependency for tests / scripts that import
+    # ai_image_generator standalone.
+    try:
+        from . import wastake_client
+    except Exception:
+        _visual_subject_local_cache[key] = None
+        return None
+    result = wastake_client.get_visual_subject(name)
+    # Persist None too, so a transient backend hiccup doesn't get retried in
+    # the same process for the same name (next cycle's tick is enough latency).
+    _visual_subject_local_cache[key] = result
+    return result
+
+
 def _action_modifiers(angle_reasoning: str) -> str:
     """Return the first matching action modifier from the angle text, or ''.
 
@@ -935,6 +1010,24 @@ def _build_scene(subjects: list[tuple[str, str]], entity, headline: str) -> str:
                 return f"dramatic portrait of {name}, intense expression, cinematic lighting"
             if e_type in ("index", "commodity"):
                 return f"dramatic visualization of {name} market movement, charts, data"
+
+        # Frente 5 — dynamic discovery: try to identify an unknown entity
+        # from the headline and ask the backend how to visualize it before
+        # falling back to a generic scene.
+        candidate = _extract_unknown_entity_candidate(headline)
+        if candidate:
+            looked_up = _lookup_visual_subject(candidate)
+            if looked_up:
+                desc = (looked_up.get("description") or {})
+                visual = (desc.get("visual_description") or "").strip()
+                category = desc.get("category") or "unknown"
+                if visual and category != "unknown":
+                    palette = (desc.get("color_palette") or "").strip()
+                    scene = f"{visual}, dramatic composition"
+                    if palette:
+                        scene = f"{scene}, {palette} palette"
+                    return scene
+
         # Rotate through diverse fallbacks based on headline hash to avoid repetition
         idx = int(hashlib.md5(headline.encode()).hexdigest(), 16) % len(_GENERIC_FALLBACKS)
         return _GENERIC_FALLBACKS[idx]
