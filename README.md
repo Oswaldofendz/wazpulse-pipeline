@@ -28,6 +28,13 @@ INFO [pulse-engine] cycle tick — pulse_candidates count=0
 
 See `.env.example`. The only vars required for Bloque 4 smoke test are `SUPABASE_URL` and `SUPABASE_SERVICE_KEY`; the rest become required as later bloques come online.
 
+### Storage-safe default
+
+`ENABLE_CARD_IMAGES=false` is the default. In this mode, WazPulse creates
+text posts and sends text-only Telegram approval messages, but does not render
+or upload card images to Supabase Storage. Set it to `true` only when an
+image-based publishing workflow is ready and its retention policy is known.
+
 ## Deployment
 
 Auto-deploys on push to `master` via Railway service in the WaStake Railway project (same project as `wastake-backend`, separate service).
