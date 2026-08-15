@@ -323,13 +323,13 @@ def _process_one(candidate: dict, snapshot: Optional[dict]) -> Optional[str]:
     except Exception as e:
         return f"post compose failed: {e}"
 
-    # Render + upload the card image. Best-effort: a failure here doesn't
-    # block insertion — the post still goes in with NULL image URLs and
-    # we'll backfill later from a maintenance script if needed.
-    url, path = card_generator.render_and_upload(post, candidate_id=candidate["id"])
-    if url:
-        post["card_image_url"]  = url
-        post["card_image_path"] = path
+    # Storage is opt-in.  Text-only Telegram review is enough for the normal
+    # approval flow, and avoids uploading one permanent image per candidate.
+    if config.ENABLE_CARD_IMAGES:
+        url, path = card_generator.render_and_upload(post, candidate_id=candidate["id"])
+        if url:
+            post["card_image_url"]  = url
+            post["card_image_path"] = path
 
     try:
         client = get_client()
@@ -365,6 +365,10 @@ def backfill_cards() -> dict:
     Targets posts that could still be published (generated / pending_approval /
     approved). Skips rejected/failed/archived because we won't post those anyway.
     """
+    if not config.ENABLE_CARD_IMAGES:
+        log.info("card backfill disabled (ENABLE_CARD_IMAGES=false)")
+        return {"picked": 0, "generated": 0, "errors": 0}
+
     client = get_client()
     res = (
         client.table("pulse_posts")

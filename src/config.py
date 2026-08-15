@@ -37,6 +37,14 @@ CYCLE_INTERVAL_SECONDS = int(os.getenv("CYCLE_INTERVAL_SECONDS", "300"))
 LOG_LEVEL              = os.getenv("LOG_LEVEL", "INFO").upper()
 BLOQUE_ACTUAL          = int(os.getenv("BLOQUE_ACTUAL", "4"))
 
+# --- Storage safety ---
+# Cards used to be generated for every candidate before human review.  This can
+# fill the Supabase free-tier bucket quickly, so it must be explicitly enabled
+# only when an image-based publishing workflow is ready.
+ENABLE_CARD_IMAGES = os.getenv("ENABLE_CARD_IMAGES", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+
 
 def assert_required_for_bloque(bloque: int) -> None:
     """Fail fast if a hard-required env var is missing at startup.
