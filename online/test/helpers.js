@@ -67,6 +67,8 @@ export function setup(overrides = {}) {
       return Response.json({ok: true, result: {message_id: 100 + state.messages.length}});
     }
     if (url.endsWith('/answerCallbackQuery')) return Response.json({ok: true, result: true});
+    if (url.endsWith('/getMe')) return Response.json({ok: true, result: {username: 'fixture_bot'}});
+    if (url.endsWith('/setWebhook')) return Response.json({ok: true, result: true});
     if (url.endsWith('/sendDocument')) {
       state.documents.push(await options.body.get('document').text());
       if (state.failTelegram) throw new Error('response lost after sending');

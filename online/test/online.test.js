@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createPipeline} from '../src/pipeline.js';
 import {normalizeStory, validateEditorial, isOwner, minimalUpdate, makePack} from '../src/domain.js';
-import {readBounded} from '../src/io.js';
+import {readBounded, network} from '../src/io.js';
 import {store} from '../src/store.js';
 import worker from '../src/worker.js';
 import {NOW, article, angle, setup, callback} from './helpers.js';
@@ -166,6 +166,20 @@ test('response bounds prevent oversized news or webhook payloads', async () => {
   await assert.rejects(readBounded(new Response('x'.repeat(100)), 10));
 });
 
+test('Worker-compatible fetch rejects redirects without forwarding credentials', async () => {
+  const requests = [];
+  const net = network(async (url, options) => {
+    requests.push({url, options});
+    if (options.redirect === 'error') throw new TypeError('Unsupported Worker redirect mode');
+    return new Response('', {status: 302, headers: {Location: 'https://other-host.invalid/'}});
+  });
+  await assert.rejects(net.json('https://api.telegram.org/botfixture/getMe', {
+    method: 'POST', body: '{}'
+  }), error => error.status === 302);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].options.redirect, 'manual');
+});
+
 test('public routes disclose neither stories nor configuration; admin/webhook need secrets', async () => {
   const s = setup(), ctx = {waitUntil() {}};
   const response = await worker.fetch(new Request('https://test/health'), s.env, ctx);
@@ -174,4 +188,27 @@ test('public routes disclose neither stories nor configuration; admin/webhook ne
   assert.equal(text.includes('test-only'), false);
   assert.equal((await worker.fetch(new Request('https://test/admin/status'), s.env, ctx)).status, 401);
   assert.equal((await worker.fetch(new Request('https://test/telegram/webhook', {method: 'POST'}), s.env, ctx)).status, 401);
+});
+
+test('webhook registration requires admin access and the configured Worker origin', async () => {
+  const s = setup({ADMIN_TOKEN: 'fixture-admin', TELEGRAM_WEBHOOK_SECRET: 'fixture-webhook',
+    WORKER_ORIGIN: 'https://fixture-owner.workers.dev'});
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = s.fetcher;
+  try {
+    const url = s.env.WORKER_ORIGIN + '/admin/telegram-connect';
+    assert.equal((await worker.fetch(new Request(url, {method: 'POST'}), s.env, {})).status, 401);
+    assert.equal(s.state.calls.length, 0);
+    const headers = {Authorization: 'Bearer fixture-admin'};
+    const response = await worker.fetch(new Request(url, {method: 'POST', headers}), s.env, {});
+    assert.equal(response.status, 200);
+    const call = s.state.calls.find(x => x.url.endsWith('/setWebhook'));
+    const body = JSON.parse(call.options.body);
+    assert.equal(body.url, s.env.WORKER_ORIGIN + '/telegram/webhook');
+    assert.equal(body.drop_pending_updates, false);
+    s.state.calls = [];
+    s.env.WORKER_ORIGIN = 'https://other-origin.workers.dev';
+    assert.equal((await worker.fetch(new Request(url, {method: 'POST', headers}), s.env, {})).status, 400);
+    assert.equal(s.state.calls.length, 0);
+  } finally { globalThis.fetch = savedFetch; }
 });

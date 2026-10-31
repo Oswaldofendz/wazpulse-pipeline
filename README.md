@@ -2,13 +2,14 @@
 
 > **Versión online gratuita:** la adaptación para Cloudflare Workers + D1 está
 > en [online](online/README.md). Incluye recolección desde WaStake, revisión por
-> Telegram y entrega de materiales. Su activación requiere la cuenta y
-> configuración reales del propietario; no está desplegada todavía.
+> Telegram y entrega de materiales. Está desplegada en Cloudflare Free y
+> conectada al bot: [estado del despliegue](docs/DESPLIEGUE-2026-10-31.md).
 
 > **Recuperación WaCapital · 31 octubre 2026:** el README histórico de abajo
 > está desactualizado. Lee [el diagnóstico y plan actual](docs/RECUPERACION-2026-10-31.md).
 > En esta rama, publicación social y borrado automático están desactivados
-> por defecto. No se ha reactivado el bot en producción.
+> por defecto en el proceso Python histórico. La versión online mantiene la
+> publicación en redes bajo control manual del propietario.
 
 PulseEngine for **WazPulse** — Python worker that runs every 5 min to:
 

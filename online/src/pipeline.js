@@ -1,6 +1,6 @@
 import {BACKEND, DAY, normalizeStory, validateEditorial, isOwner, makePack} from './domain.js';
 import {store} from './store.js';
-import {network, telegram} from './io.js';
+import {network, telegram, ServiceError} from './io.js';
 
 const enabled = value => value === 'true';
 const boundedInt = (value, fallback, max) => {
@@ -118,21 +118,26 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
     const owner = crypto.randomUUID(), instant = now();
     if (!await db.lock('tick', owner, instant, 8 * 60_000)) return {state: 'busy'};
     const result = {at: new Date(instant).toISOString(), state: 'ok', inserted: 0, editorial: 0, notifications: 0};
+    let stage = 'inbox';
     try {
       await drainInbox(2);
+      stage = 'capacity';
       const size = await db.first('SELECT COUNT(*) AS count FROM stories');
       if (size.count >= 5000) {
         result.state = 'storage-cap';
       } else {
         // This existing endpoint performs RSS aggregation; no provider keys move.
+        stage = 'source';
         const source = await net.json(BACKEND + '/api/market/impact-alerts');
         result.sourceStatus = source.status || 'unknown';
         if (['ok', 'partial'].includes(source.status) && Array.isArray(source.alerts)) {
           const candidates = source.alerts.slice(0, 40).filter(a => typeof a.priority === 'number' && a.priority >= minimum())
             .sort((a, b) => b.priority - a.priority || Date.parse(b.publishedAt) - Date.parse(a.publishedAt));
           for (const article of candidates.slice(0, 8)) {
+            stage = 'normalize';
             const story = await normalizeStory(article, instant);
             if (story) {
+              stage = 'insert';
               const saved = await db.insert(story, instant);
               result.inserted += saved.meta?.changes || 0;
             }
@@ -140,6 +145,7 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
         }
       }
       if (enabled(env.AI_ENABLED)) {
+        stage = 'editorial';
         const pending = await db.next(instant, instant - 6 * 3_600_000);
         const day = new Date(instant).toISOString().slice(0, 10);
         if (pending && await db.reserve(day, boundedInt(env.DAILY_LLM_LIMIT, 6, 16))) {
@@ -163,11 +169,19 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
           }
         }
       }
+      stage = 'review';
       const review = await db.first("SELECT id FROM stories WHERE state='ready' AND notification='new' AND published_at>=? ORDER BY priority DESC LIMIT 1", instant - DAY);
       if (review && env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) {
         result.notifications = Number(await sendReview(review.id));
       }
-    } catch { result.state = 'source-or-storage-unavailable'; }
+    } catch (error) {
+      result.state = 'source-or-storage-unavailable';
+      result.failedStage = stage;
+      if (error instanceof ServiceError) {
+        result.failure = error.service;
+        result.upstreamStatus = error.status;
+      }
+    }
     finally {
       await db.set('last_tick', result);
       await db.unlock('tick', owner);

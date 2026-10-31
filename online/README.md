@@ -5,8 +5,10 @@ con su IA actual y los envía a revisión del propietario por Telegram.
 Después de aprobar, entrega un archivo de texto con X, Instagram, carrusel,
 guion TikTok/Shorts y dirección visual. La publicación en redes es manual.
 
-Estado al 31 de octubre de 2026: implementado y probado localmente; pendiente
-de acceso a Cloudflare, configuración real y prueba en el alojamiento.
+Estado al 31 de octubre de 2026: desplegado en Cloudflare Free, D1 conectado,
+recolección y análisis activados; Telegram conectado. Se confirmó una primera
+noticia analizada y enviada al propietario. La prueba de aprobación/archivo
+se documenta en [el registro del despliegue](../docs/DESPLIEGUE-2026-10-31.md).
 
 ## Alojamiento y costes
 
@@ -162,14 +164,41 @@ contienen borradores y guiones, no vídeos renderizados ni imágenes.
 
 ## Verificación realizada
 
-- 16 pruebas de esta versión pasan con SQLite real y red controlada.
-- Construcción oficial con Wrangler 4.156.0: 26,64 KiB, 8,30 KiB comprimido.
+- Las pruebas de esta versión usan SQLite real y red controlada; el recuento
+  y las comprobaciones finales están en el registro del despliegue.
+- Construcción y despliegue con Wrangler 4.156.0 confirmados.
 - Instalación: auditoría npm con cero vulnerabilidades informadas.
 - Prueba de lectura pública: HTTP 200, nueve fuentes, veinte noticias
   recibidas, diecisiete aceptadas por los filtros en el momento de consulta.
-- No se realizó una llamada a IA, ni envío real a Telegram, ni despliegue.
-- La herramienta local de Cloudflare indicó que todavía no había sesión
-  iniciada. El control del navegador estaba desactivado en la sesión.
+- La autorización de Cloudflare se completó con el propietario, y después
+  se verificó el plan Free ($0) en su panel.
+- El propietario autorizó explícitamente trasladar solo el token y destino
+  de Telegram desde Railway a los secretos cifrados de Cloudflare. No se
+  imprimieron sus valores ni se copiaron otras credenciales.
+- Se corrigió una diferencia real del entorno Workers: no admite
+  redirect:error. Se usa redirect:manual y se rechazan respuestas 3xx.
+- Se generan dos secretos internos aleatorios. Su copia local se guarda
+  cifrada con DPAPI de Windows, fuera de Git. Los ayudantes administrativos
+  requieren PowerShell 7 (pwsh) y nunca imprimen esos secretos.
+
+## Operación desde el PC autorizado
+
+Los secretos internos ya configurados permiten usar:
+
+    node scripts/admin.mjs status
+    node scripts/admin.mjs telegram-info
+
+El comando tick ejecuta un ciclo real: con IA activa puede consumir una llamada
+del presupuesto diario y enviar una noticia a Telegram. No usarlo como sondeo.
+
+El registro del webhook puede gestionarse en el propio Worker con
+telegram-connect. Requiere administración autenticada, propietario configurado
+y WORKER_ORIGIN igual al dominio que recibe la petición. No revela el token
+del bot y conserva las actualizaciones pendientes.
+
+Los botones antiguos de Railway no corresponden a la nueva cola D1. El
+historial de Supabase se conserva, y las nuevas aprobaciones se hacen en los
+mensajes que entregue este servicio.
 
 ## Siguiente iteración
 

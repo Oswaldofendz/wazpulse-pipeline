@@ -31,7 +31,7 @@ export function network(fetcher = fetch) {
     async json(url, options = {}, timeout = 20_000) {
       let response;
       try {
-        response = await fetcher(url, {...options, redirect: 'error', signal: AbortSignal.timeout(timeout)});
+        response = await fetcher(url, {...options, redirect: 'manual', signal: AbortSignal.timeout(timeout)});
       } catch { throw new ServiceError('network'); }
       if (!response.ok) throw new ServiceError('http', response.status);
       try { return JSON.parse(await readBounded(response)); }
@@ -53,6 +53,12 @@ export function telegram(env, net) {
     return data.result;
   }
   return {
+    info: () => call('getMe', {}),
+    connect: target => call('setWebhook', {
+      url: target, secret_token: env.TELEGRAM_WEBHOOK_SECRET,
+      allowed_updates: ['message', 'callback_query'],
+      drop_pending_updates: false, max_connections: 1
+    }),
     send: (text, keyboard) => call('sendMessage', {
       chat_id: env.TELEGRAM_CHAT_ID, text, link_preview_options: {is_disabled: true},
       ...(keyboard ? {reply_markup: keyboard} : {})

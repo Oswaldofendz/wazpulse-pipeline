@@ -1,5 +1,5 @@
 import {isOwner, minimalUpdate, digest} from './domain.js';
-import {readBounded} from './io.js';
+import {readBounded, network, telegram} from './io.js';
 import {store} from './store.js';
 import {createPipeline} from './pipeline.js';
 
@@ -43,6 +43,24 @@ export default {
         const pipeline = createPipeline(env);
         if (path === '/admin/status' && request.method === 'GET') return json(await pipeline.status());
         if (path === '/admin/tick' && request.method === 'POST') return json(await pipeline.tick());
+        if (path === '/admin/telegram-info' && request.method === 'GET') {
+          if (!env.TELEGRAM_BOT_TOKEN) return json({configured: false});
+          const info = await telegram(env, network()).info();
+          return json({configured: true, username: /^[A-Za-z0-9_]{5,32}$/.test(info.username || '') ? info.username : null});
+        }
+        if (path === '/admin/telegram-connect' && request.method === 'POST') {
+          if (!active(env)) return json({error: 'Pipeline paused'}, 409);
+          const origin = new URL(env.WORKER_ORIGIN || 'https://invalid.local');
+          if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID || !env.TELEGRAM_WEBHOOK_SECRET ||
+              origin.protocol !== 'https:' || !origin.hostname.endsWith('.workers.dev') ||
+              origin.origin !== new URL(request.url).origin || origin.username || origin.password ||
+              origin.search || origin.hash || origin.pathname !== '/' ||
+              (!/^\d+$/.test(env.TELEGRAM_CHAT_ID) && !/^\d+$/.test(env.TELEGRAM_APPROVER_ID || ''))) {
+            return json({error: 'Telegram configuration incomplete'}, 400);
+          }
+          const connected = await telegram(env, network()).connect(new URL('/telegram/webhook', origin).href);
+          return json({connected: connected === true, pendingUpdatesPreserved: true});
+        }
       } catch { return json({error: 'Service unavailable'}, 503); }
     }
     return json({error: 'Not found'}, 404);
