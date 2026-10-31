@@ -4,12 +4,14 @@ import {readFileSync} from 'node:fs';
 export function database() {
   const native = new DatabaseSync(':memory:');
   native.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
+  native.exec(readFileSync(new URL('../media-schema.sql', import.meta.url), 'utf8'));
   return {
     native,
     prepare(sql) {
       const stmt = native.prepare(sql);
       return {
         bind(...args) {
+          args = args.map(value => value instanceof ArrayBuffer ? new Uint8Array(value) : value);
           return {
             async first() { return stmt.get(...args) || null; },
             async all() { return {results: stmt.all(...args)}; },

@@ -5,6 +5,12 @@ con su IA actual y los envía a revisión del propietario por Telegram.
 Después de aprobar, entrega un archivo de texto con X, Instagram, carrusel,
 guion TikTok/Shorts y dirección visual. La publicación en redes es manual.
 
+La ampliación visual genera una ilustración con Workers AI, una portada PNG
+para X y cinco láminas de carrusel, entregadas en Telegram para una segunda
+aprobación. Consulta [el funcionamiento, límites y recuperación](../docs/IMAGENES-2026-10-31.md).
+La plantilla mantiene MEDIA_ENABLED=false; la configuración privada de la
+cuenta real determina si está activada.
+
 Estado al 31 de octubre de 2026: desplegado en Cloudflare Free, D1 conectado,
 recolección y análisis activados; Telegram conectado. Se confirmó una primera
 noticia analizada y enviada al propietario, su aprobación y la entrega del
@@ -26,7 +32,8 @@ Una clave disponible no prueba por sí sola que una cuenta sea gratuita.
 
 Límites iniciales:
 
-- Una ejecución cada diez minutos, en minutos 3, 13, 23, 33, 43 y 53 UTC.
+- Recolección cada diez minutos, en minutos 3, 13, 23, 33, 43 y 53 UTC.
+- La ampliación visual avanza un paso por minuto fuera de esos minutos.
 - Hasta ocho noticias incorporadas por ciclo; antigüedad máxima de 24 h.
 - Análisis solo de noticias de las últimas seis horas.
 - Relevancia inicial mínima 65/100, y editorial mínima 4/5.
@@ -34,7 +41,8 @@ Límites iniciales:
 - Límite configurable de llamadas entre 0 y 16; también cuenta los fallos.
 - Como máximo un envío automático de revisión por ciclo.
 - La cola se detiene para incorporar noticias al llegar a 5.000 registros.
-- La aprobación no llama de nuevo a la IA: formatea el contenido ya revisado.
+- La aprobación formatea el texto revisado y, si MEDIA_ENABLED=true,
+  encola la ilustración: presupuesto separado de tres intentos/día UTC.
 
 El límite mide llamadas a /api/analysis/news-angle, no las llamadas internas
 que ese backend pueda hacer a Groq/Gemini durante un reintento o fallback.
@@ -45,7 +53,8 @@ D1 tiene sus propios límites de lectura/escritura y espacio. La espera de red
 no cuenta como CPU, pero sí el procesamiento de JSON y el código local.
 El paquete es pequeño; el cumplimiento real de CPU se medirá en Cloudflare.
 Si se supera una cuota o falla una fuente, la aplicación debe quedar pendiente,
-sin cambiar de plan. No está certificado todavía el funcionamiento en producción.
+sin cambiar de plan. El flujo editorial se verificó en producción; la ampliación
+visual tiene su propio registro de pruebas y entrega.
 
 La consulta periódica recoge noticias reales; no es un ping artificial para
 evitar que Render duerma. Si Render está apagado o arrancando, el ciclo puede
@@ -141,7 +150,7 @@ La construcción con --dry-run no publica ni crea recursos en Cloudflare.
        node scripts/connect-telegram.mjs https://URL_REAL_DEL_WORKER.workers.dev
 
    El script valida el Worker y registra el webhook sin borrar los mensajes
-   pendientes. No se ha ejecutado este paso durante el desarrollo.
+   pendientes. Este paso se verificó en la instalación del 31/10/2026.
 
 7. Enviar /estado al bot desde el usuario autorizado. Comprobar la respuesta.
    Después activar AI_ENABLED=true, confirmar las cuotas gratuitas de las

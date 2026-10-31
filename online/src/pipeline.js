@@ -1,6 +1,7 @@
 import {BACKEND, DAY, normalizeStory, validateEditorial, isOwner, makePack} from './domain.js';
 import {store} from './store.js';
 import {network, telegram, ServiceError} from './io.js';
+import {createMedia} from './media.js';
 
 const enabled = value => value === 'true';
 const boundedInt = (value, fallback, max) => {
@@ -11,6 +12,7 @@ const boundedInt = (value, fallback, max) => {
 
 export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
   const db = store(env.DB), net = network(fetcher), bot = telegram(env, net);
+  const media = createMedia(env, {fetcher, now});
   const active = () => enabled(env.PIPELINE_ENABLED);
   const minimum = () => boundedInt(env.MIN_PRIORITY, 65, 100);
   const strength = () => boundedInt(env.MIN_STRENGTH, 4, 5);
@@ -39,7 +41,8 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
         'Base: titular y extracto RSS. Comprueba cifras y contexto en la fuente.',
         story.source_url,
         'Referencia: ' + story.id,
-        'Aprobar prepara el paquete de textos. La publicación en redes sigue siendo manual.'
+        env.MEDIA_ENABLED === 'true' ? 'Aprobar prepara el texto y pone las imágenes con IA en cola. Recibirás la portada y cinco láminas para una segunda revisión. No publica en redes.' :
+          'Aprobar prepara el paquete de textos. La publicación en redes sigue siendo manual.'
       ].join('\n\n');
       const result = await bot.send(text.slice(0, 3900), {inline_keyboard: [[
         {text: '✅ Aprobar material', callback_data: 'approve:' + story.id},
@@ -75,8 +78,18 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
       // Answer immediately; document generation uses no LLM and runs afterwards.
       await bot.answer(callback.id, 'Procesando revisión').catch(() => {});
       const [action, id] = callback.data.split(':');
-      const story = await db.review(id, callback.message.message_id, action === 'approve', now());
-      if (story?.state === 'approved') await deliverPack(id);
+      if (action === 'visualok' || action === 'visualno') {
+        await media.review(id, callback.message.message_id, action === 'visualok');
+        return;
+      }
+      // Resume an interrupted approval without approving a different message
+      // or sending a package twice. Both delivery claims remain idempotent.
+      const story = await db.review(id, callback.message.message_id, action === 'approve', now()) ||
+        (action === 'approve' ? await db.first("SELECT * FROM stories WHERE id=? AND state='approved' AND message_id=?", id, String(callback.message.message_id)) : null);
+      if (story?.state === 'approved') {
+        await deliverPack(id);
+        if (await media.enqueue(id)) await bot.send('🎨 Texto aprobado. Prepararé una ilustración con IA, la portada para X y cinco láminas. Llegarán durante los próximos minutos; después podrás aprobar la versión visual.');
+      }
       return;
     }
     const command = update.message?.text?.trim();
@@ -85,7 +98,7 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
       await bot.send('WaCapital · ' + (active() ? 'Activo' : 'Pausado') +
         '\nLlamadas editoriales hoy: ' + result.dailyBackendCalls + '/' + result.dailyLimit +
         '\nEstados: ' + result.states.map(x => x.state + ': ' + x.count).join(', ') +
-        '\n/pendientes · /paquetes · /revisar ID · /paquete ID');
+        '\n/pendientes · /paquetes · /revisar ID · /paquete ID · /imagenes ID · /reenviar ID');
     } else if (command === '/pendientes') {
       const rows = await db.all("SELECT id,title FROM stories WHERE state IN ('ready','pending') AND published_at>=? ORDER BY priority DESC LIMIT 5", now() - DAY);
       await bot.send(rows.length ? rows.map(x => x.title.slice(0, 180) + '\n/revisar ' + x.id).join('\n\n') : 'No hay materiales pendientes recientes.');
@@ -98,6 +111,12 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
       if (!await sendReview(id, true)) await bot.send('No se pudo enviar la revisión. Consulta /estado.');
     } else if (/^\/paquete [a-f0-9]{32}$/.test(command || '')) {
       if (!await deliverPack(command.split(' ')[1], true)) await bot.send('No hay un paquete aprobado disponible o falló el envío.');
+    } else if (/^\/imagenes [a-f0-9]{32}$/.test(command || '')) {
+      const result = await media.status(command.split(' ')[1]);
+      const labels = {queued: 'En cola', rendering: 'Preparando imágenes', review: 'Pendiente de tu revisión', approved: 'Versión final aprobada', rejected: 'Imágenes descartadas', blocked: 'Preparación interrumpida'};
+      await bot.send(result ? '🎨 Imágenes: ' + labels[result.state] + '\nOriginales entregados: ' + result.assets.filter(x => x.delivery === 'sent').length + '/6' : 'No hay imágenes en preparación para esa noticia.');
+    } else if (/^\/reenviar [a-f0-9]{32}$/.test(command || '')) {
+      if (!await media.resend(command.split(' ')[1])) await bot.send('No hay imágenes disponibles para reenviar.');
     }
   }
 

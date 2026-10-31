@@ -5,6 +5,8 @@ const command = process.argv[2] || 'status';
 const routes = {
   status: ['/admin/status', 'GET'],
   tick: ['/admin/tick', 'POST'],
+  'media-status': ['/admin/media-status', 'GET'],
+  'media-step': ['/admin/media-step', 'POST'],
   'telegram-info': ['/admin/telegram-info', 'GET'],
   'telegram-connect': ['/admin/telegram-connect', 'POST']
 };

@@ -1,3 +1,5 @@
+import {xPublication} from './publication.js';
+
 export const BACKEND = 'https://wastake.onrender.com';
 export const DAY = 86_400_000;
 export const DISCLAIMER = 'Información educativa. No es asesoramiento financiero.';
@@ -74,7 +76,7 @@ export function minimalUpdate(update) {
   if (!Number.isSafeInteger(update?.update_id) || update.update_id < 0) return null;
   if (update.callback_query) {
     const q = update.callback_query;
-    if (typeof q.id !== 'string' || !/^(approve|reject):[a-f0-9]{32}$/.test(q.data || '') ||
+    if (typeof q.id !== 'string' || !/^(approve|reject|visualok|visualno):[a-f0-9]{32}$/.test(q.data || '') ||
         !Number.isSafeInteger(q.message?.message_id)) return null;
     return {update_id: update.update_id, callback_query: {
       id: q.id.slice(0, 128), data: q.data, from: {id: q.from?.id},
@@ -90,17 +92,10 @@ export function minimalUpdate(update) {
   return null;
 }
 
-function shorten(text, length) {
-  const chars = Array.from(text);
-  if (chars.length <= length) return text;
-  return chars.slice(0, Math.max(0, length - 1)).join('').replace(/\s+\S*$/, '') + '…';
-}
-
 export function makePack(story) {
   const e = typeof story.editorial === 'string' ? JSON.parse(story.editorial) : story.editorial;
   const stamp = new Date(story.published_at).toISOString();
-  const xSuffix = '\n' + story.source_url + '\nSolo información educativa.';
-  const x = shorten(e.tweet, Math.max(30, 280 - Array.from(xSuffix).length)) + xSuffix;
+  const x = xPublication(story);
   return [
     '# WaCapital · Material editorial aprobado',
     'Noticia original: ' + story.title,
@@ -110,8 +105,9 @@ export function makePack(story) {
     'Base: titular y extracto RSS. La IA propone una interpretación; revisión humana obligatoria.',
     'Proveedor editorial: ' + e.provider + ' · Relevancia editorial: ' + e.strength + '/5',
     '',
-    '## X · Borrador', x,
-    'Revisar el contador nativo de X antes de publicar: enlaces y caracteres tienen ponderaciones propias.',
+    '## X · Borrador', x.text,
+    'Caracteres ponderados: ' + x.weightedLength + '/280. Comprobado con twitter-text.',
+    x.composeUrl ? 'Abrir el borrador (adjuntar la imagen y confirmar manualmente): ' + x.composeUrl : 'Copia el texto en X, adjunta la imagen y confirma manualmente.',
     '',
     '## Instagram · Caption', e.instagram || e.hook,
     '', 'Lectura del evento: ' + e.angle, e.reasoning,

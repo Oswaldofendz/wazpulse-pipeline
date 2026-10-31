@@ -64,6 +64,21 @@ export function telegram(env, net) {
       ...(keyboard ? {reply_markup: keyboard} : {})
     }),
     answer: (id, text) => call('answerCallbackQuery', {callback_query_id: id, text}),
+    async imageDocument(image, filename, caption) {
+      const form = new FormData();
+      form.set('chat_id', env.TELEGRAM_CHAT_ID);
+      form.set('caption', caption.slice(0, 950));
+      if (typeof image === 'string') form.set('document', image);
+      else form.set('document', new Blob([image], {type: 'image/png'}), filename);
+      const data = await net.json(url('sendDocument'), {method: 'POST', body: form}, 15_000);
+      if (!data.ok) throw new ServiceError('telegram', data.error_code || 0);
+      return data.result;
+    },
+    async download(fileId) {
+      const info = await call('getFile', {file_id: fileId});
+      if (typeof info.file_path !== 'string' || !/^[A-Za-z0-9_./-]+$/.test(info.file_path) || info.file_path.includes('..')) throw new ServiceError('telegram-file');
+      return 'https://api.telegram.org/file/bot' + env.TELEGRAM_BOT_TOKEN + '/' + info.file_path;
+    },
     async document(text, filename) {
       const form = new FormData();
       form.set('chat_id', env.TELEGRAM_CHAT_ID);

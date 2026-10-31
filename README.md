@@ -4,6 +4,8 @@
 > en [online](online/README.md). Incluye recolección desde WaStake, revisión por
 > Telegram y entrega de materiales. Está desplegada en Cloudflare Free y
 > conectada al bot: [estado del despliegue](docs/DESPLIEGUE-2026-10-31.md).
+> La ampliación de [imágenes y carruseles con IA](docs/IMAGENES-2026-10-31.md)
+> prepara originales para Telegram; no publica automáticamente en X.
 
 > **Recuperación WaCapital · 31 octubre 2026:** el README histórico de abajo
 > está desactualizado. Lee [el diagnóstico y plan actual](docs/RECUPERACION-2026-10-31.md).

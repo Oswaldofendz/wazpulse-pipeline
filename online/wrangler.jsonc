@@ -3,12 +3,17 @@
   "name": "wacapital-online",
   "main": "src/worker.js",
   "compatibility_date": "2026-10-31",
+  "compatibility_flags": ["nodejs_compat"],
+  "ai": {"binding": "AI"},
+  "browser": {"binding": "BROWSER"},
   "workers_dev": true,
   "observability": { "enabled": false },
-  "triggers": { "crons": ["3,13,23,33,43,53 * * * *"] },
+  "triggers": { "crons": ["* * * * *"] },
   "vars": {
     "PIPELINE_ENABLED": "false",
     "AI_ENABLED": "false",
+    "MEDIA_ENABLED": "false",
+    "DAILY_VISUAL_LIMIT": "3",
     "DAILY_LLM_LIMIT": "6",
     "MIN_PRIORITY": "65",
     "MIN_STRENGTH": "4"

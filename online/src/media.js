@@ -1,0 +1,194 @@
+import {store} from './store.js';
+import {network, telegram, ServiceError} from './io.js';
+import {visualBrief, visualHtml} from './publication.js';
+
+const limit = value => /^([0-6])$/.test(String(value)) ? Number(value) : 3;
+const enabled = env => env.PIPELINE_ENABLED === 'true' && env.MEDIA_ENABLED === 'true';
+export function createMedia(env, {fetcher = fetch, now = Date.now, render, generate} = {}) {
+  const db = store(env.DB), bot = telegram(env, network(fetcher));
+  const getJob = id => db.first('SELECT * FROM visual_jobs WHERE story_id=?', id);
+
+  async function enqueue(id) {
+    if (!enabled(env)) return false;
+    const inserted = await db.run("INSERT OR IGNORE INTO visual_jobs(story_id,created_at) SELECT id,? FROM stories WHERE id=? AND state='approved'", now(), id);
+    return Boolean(inserted.meta?.changes);
+  }
+
+  async function status(id) {
+    const job = await getJob(id);
+    if (!job) return null;
+    const assets = await db.all('SELECT position,filename,delivery FROM visual_assets WHERE story_id=? ORDER BY position', id);
+    return {id, state: job.state, error: job.error, assets, createdAt: job.created_at};
+  }
+
+  async function generateImage(brief) {
+    if (generate) return generate(brief);
+    if (!env.AI) throw new ServiceError('ai-binding');
+    const response = await env.AI.run(brief.model, {prompt: brief.prompt, steps: brief.steps});
+    const data = response?.image;
+    if (typeof data !== 'string' || !/^[A-Za-z0-9+/=]+$/.test(data) || data.length > 2_400_000 || data.length < 100) throw new ServiceError('ai-image');
+    return data;
+  }
+
+  async function renderImage(html, dimensions) {
+    if (render) return render(html, dimensions);
+    if (!env.BROWSER) throw new ServiceError('browser-binding');
+    const {launch} = await import('@cloudflare/playwright');
+    const browser = await launch(env.BROWSER, {keep_alive: 10_000});
+    try {
+      const page = await browser.newPage({viewport: dimensions, deviceScaleFactor: 1});
+      await page.route('**/*', route => route.request().url().startsWith('data:') || route.request().url() === 'about:blank' ? route.continue() : route.abort());
+      await page.setContent(html, {waitUntil: 'load', timeout: 15_000});
+      const fits = await page.evaluate(async () => {
+        await document.fonts.ready;
+        await Promise.all([...document.images].map(img => img.decode()));
+        return document.documentElement.dataset.fits === 'true';
+      });
+      if (!fits) throw new ServiceError('layout-overflow');
+      return await page.screenshot({type: 'png'});
+    } finally { await browser.close(); }
+  }
+
+  async function deliverAsset(asset, brief) {
+    // Claim before the external send. An ambiguous response needs an explicit
+    // owner retry; automatic runs never resend an uncertain Telegram document.
+    const claimed = await db.first("UPDATE visual_assets SET delivery='sending' WHERE story_id=? AND position=? AND delivery='new' RETURNING *", asset.story_id, asset.position);
+    if (!claimed) return false;
+    try {
+      const caption = asset.position === 0 ? '🖼 Portada para X · 1200 × 675 · Ilustración con IA\n' + brief.title :
+        '📚 Carrusel · ' + asset.position + '/5 · 1080 × 1350 · Ilustración con IA';
+      const result = await bot.imageDocument(new Uint8Array(claimed.png), asset.filename, caption);
+      if (!result?.document?.file_id || !Number.isSafeInteger(result.message_id)) throw new ServiceError('telegram-image');
+      // Telegram retains the original PNG; keep its file ID and remove only
+      // this temporary upload buffer, never the source or historical content.
+      await db.run("UPDATE visual_assets SET delivery='sent',file_id=?,message_id=?,png=NULL WHERE story_id=? AND position=?", result.document.file_id, String(result.message_id), asset.story_id, asset.position);
+      return true;
+    } catch {
+      await db.run("UPDATE visual_assets SET delivery='uncertain' WHERE story_id=? AND position=? AND delivery='sending'", asset.story_id, asset.position);
+      return false;
+    }
+  }
+
+  async function step() {
+    if (!enabled(env)) return {state: 'disabled'};
+    const owner = crypto.randomUUID(), instant = now();
+    if (!await db.lock('visual', owner, instant, 90_000)) return {state: 'busy'};
+    let job, stage = 'queue';
+    try {
+      job = await db.first("SELECT * FROM visual_jobs WHERE state IN ('queued','rendering') AND lease_until<=? ORDER BY CASE WHEN state='rendering' THEN 0 ELSE 1 END,created_at LIMIT 1", instant);
+      if (!job) return {state: 'idle'};
+      const story = await db.first("SELECT * FROM stories WHERE id=? AND state='approved'", job.story_id);
+      if (!story) throw new ServiceError('approval-required');
+      if (job.state === 'queued') {
+        stage = 'generation';
+        if (!env.AI && !generate || !env.BROWSER && !render) throw new ServiceError('media-binding');
+        const day = new Date(instant).toISOString().slice(0, 10);
+        await db.run('INSERT OR IGNORE INTO visual_budget(day,used) VALUES(?,0)', day);
+        if (!await db.first('UPDATE visual_budget SET used=used+1 WHERE day=? AND used<? RETURNING used', day, limit(env.DAILY_VISUAL_LIMIT))) {
+          return {state: 'daily-limit', id: job.story_id};
+        }
+        // Count attempts before AI. A crash cannot run up the free quota.
+        await db.run('UPDATE visual_jobs SET attempts=attempts+1,lease_until=? WHERE story_id=?', instant + 120_000, job.story_id);
+        if (job.attempts >= 2) throw new ServiceError('generation-attempts');
+        const brief = visualBrief(story), image = await generateImage(brief);
+        // HTML validation rejects malformed/oversize image payloads, too.
+        visualHtml(brief, image);
+        await db.run("UPDATE visual_jobs SET state='rendering',manifest=?,image=?,lease_until=0,error=NULL WHERE story_id=?", JSON.stringify(brief), image, job.story_id);
+        return {state: 'image-created', id: job.story_id};
+      }
+      const brief = JSON.parse(job.manifest);
+      const assets = await db.all('SELECT * FROM visual_assets WHERE story_id=? ORDER BY position', job.story_id);
+      if (assets.some(x => ['sending','uncertain'].includes(x.delivery))) {
+        await db.run("UPDATE visual_jobs SET state='blocked',error='delivery-uncertain' WHERE story_id=?", job.story_id);
+        return {state: 'delivery-needs-review', id: job.story_id};
+      }
+      for (let position = 0; position <= 5; position++) {
+        let asset = assets.find(x => x.position === position);
+        if (asset?.delivery === 'sent') continue;
+        stage = 'render-' + position;
+        if (!asset) {
+          const last = await db.first("SELECT value FROM runtime WHERE key='visual_last_browser'");
+          if (last && instant - JSON.parse(last.value) < 25_000) return {state: 'browser-cooldown', id: job.story_id};
+          await db.set('visual_last_browser', instant);
+          const html = visualHtml(brief, job.image, position - 1);
+          const png = new Uint8Array(await renderImage(html, position === 0 ? {width: 1200, height: 675} : {width: 1080, height: 1350}));
+          if (png.length < 8 || png.length > 1_900_000 || ![137,80,78,71,13,10,26,10].every((n, i) => png[i] === n)) throw new ServiceError('png-size-or-format');
+          const filename = 'WaCapital-' + story.id.slice(0, 8) + (position === 0 ? '-X.png' : '-carrusel-' + position + '.png');
+          await db.run('INSERT INTO visual_assets(story_id,position,filename,png) VALUES(?,?,?,?)', story.id, position, filename, png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength));
+          asset = await db.first('SELECT * FROM visual_assets WHERE story_id=? AND position=?', story.id, position);
+        }
+        stage = 'delivery-' + position;
+        const delivered = await deliverAsset(asset, brief);
+        if (delivered) await db.run('UPDATE visual_jobs SET error=NULL,lease_until=0 WHERE story_id=?', story.id);
+        else await db.run("UPDATE visual_jobs SET state='blocked',error='delivery-uncertain' WHERE story_id=?", story.id);
+        return {state: delivered ? 'asset-delivered' : 'delivery-needs-review', id: job.story_id, position};
+      }
+      stage = 'final-review';
+      // A lost response here must not create duplicate approval messages.
+      await db.run("UPDATE visual_jobs SET state='review',error='review-sending' WHERE story_id=? AND state='rendering'", story.id);
+      const result = await bot.send('✅ Material visual preparado\n\n' + brief.x.text +
+        '\n\nX: ' + brief.x.weightedLength + '/280 caracteres ponderados.\nPortada y 5 láminas enviadas como PNG originales. Revisa imagen, nombres, cifras y fuente.\n\nAprobar aquí confirma esta versión; no publica en redes.',
+      {inline_keyboard: [[{text: '✅ Aprobar versión final', callback_data: 'visualok:' + story.id},
+        {text: '❌ Descartar imágenes', callback_data: 'visualno:' + story.id}]]});
+      if (!Number.isSafeInteger(result?.message_id)) throw new ServiceError('telegram-review');
+      await db.run('UPDATE visual_jobs SET review_message=?,error=NULL WHERE story_id=?', String(result.message_id), story.id);
+      return {state: 'awaiting-visual-approval', id: story.id};
+    } catch (error) {
+      const detail = String(error?.message || '');
+      const hint = /429|rate.limit|too many/i.test(detail) ? 'rate-limit' : /time limit exceeded|daily.*limit/i.test(detail) ? 'daily-quota' :
+        /timeout|timed out/i.test(detail) ? 'timeout' : /403|unauthor/i.test(detail) ? 'access' : 'unavailable';
+      const category = error instanceof ServiceError ? error.service : stage + '-' + hint;
+      if (job) {
+        // Browser capacity/rate failures resume later using the saved AI image.
+        // Bound the retry count; permanent layout or format failures stop.
+        const prior = /^retry:([^:]+):(\d+)$/.exec(job.error || '');
+        const attempt = prior?.[1] === stage ? Number(prior[2]) + 1 : 1;
+        if (stage.startsWith('render-') && !(error instanceof ServiceError) && attempt <= 3) {
+          await db.run("UPDATE visual_jobs SET state='rendering',error=?,lease_until=? WHERE story_id=?", 'retry:' + stage + ':' + attempt, instant + 120_000 * attempt, job.story_id);
+          return {state: 'render-deferred', id: job.story_id, category};
+        }
+        await db.run("UPDATE visual_jobs SET state='blocked',error=?,lease_until=0 WHERE story_id=?", category, job.story_id);
+        const reason = category === 'layout-overflow' ? 'El texto necesita un ajuste para caber en el diseño.' :
+          category === 'png-size-or-format' ? 'La imagen no cumple el formato de entrega.' : 'El servicio de imágenes no pudo completar esta preparación.';
+        await bot.send('⚠️ No se completaron las imágenes. El texto sigue disponible.\n' + reason + '\nReferencia: ' + job.story_id + '\nNo se ha activado ningún servicio de pago.').catch(() => {});
+      }
+      return {state: 'blocked', id: job?.story_id, stage, category};
+    } finally { await db.unlock('visual', owner); }
+  }
+
+  async function review(id, messageId, approved) {
+    const row = await db.first("UPDATE visual_jobs SET state=?,approved_at=? WHERE story_id=? AND state='review' AND review_message=? RETURNING *", approved ? 'approved' : 'rejected', approved ? now() : null, id, String(messageId));
+    if (!row) return false;
+    if (approved) {
+      const brief = JSON.parse(row.manifest);
+      await bot.send('📦 Versión final aprobada\n\n' + brief.x.text + '\n\nGuarda la portada PNG y adjúntala en X. El botón abre el texto; tú confirmas la publicación.',
+        brief.x.composeUrl ? {inline_keyboard: [[{text: '✍️ Abrir borrador en X', url: brief.x.composeUrl}]]} : undefined);
+    } else await bot.send('Imágenes descartadas. No se ha publicado nada.');
+    return true;
+  }
+
+  async function resend(id) {
+    const job = await getJob(id);
+    if (!job || job.state === 'rejected') return false;
+    const brief = JSON.parse(job.manifest);
+    const assets = await db.all('SELECT * FROM visual_assets WHERE story_id=? ORDER BY position', id);
+    for (const asset of assets) {
+      if (asset.file_id) await bot.imageDocument(asset.file_id, asset.filename, 'WaCapital · Copia original · Ilustración con IA');
+      else if (asset.png && ['sending', 'uncertain'].includes(asset.delivery)) {
+        await db.run("UPDATE visual_assets SET delivery='new' WHERE story_id=? AND position=?", id, asset.position);
+        await deliverAsset(asset, brief);
+      }
+    }
+    const uncertain = await db.first("SELECT COUNT(*) AS n FROM visual_assets WHERE story_id=? AND delivery IN ('sending','uncertain')", id);
+    if (job.state === 'blocked' && job.error === 'delivery-uncertain' && uncertain.n === 0) await db.run("UPDATE visual_jobs SET state='rendering',error=NULL,lease_until=0 WHERE story_id=?", id);
+    if (['review', 'blocked'].includes(job.state) && !job.review_message && assets.length === 6 && assets.every(x => x.delivery === 'sent')) await db.run("UPDATE visual_jobs SET state='rendering',error=NULL WHERE story_id=?", id);
+    return assets.length > 0;
+  }
+  async function retry(id) {
+    const row = await getJob(id);
+    if (!row || row.state !== 'blocked' || !row.image || row.error === 'layout-overflow' || row.error === 'png-size-or-format') return false;
+    await db.run("UPDATE visual_jobs SET state='rendering',error=NULL,lease_until=0 WHERE story_id=? AND state='blocked'", id);
+    return true;
+  }
+  return {enqueue, step, status, review, resend, retry};
+}

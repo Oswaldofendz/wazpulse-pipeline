@@ -2,6 +2,7 @@ import {isOwner, minimalUpdate, digest} from './domain.js';
 import {readBounded, network, telegram} from './io.js';
 import {store} from './store.js';
 import {createPipeline} from './pipeline.js';
+import {createMedia} from './media.js';
 
 const json = (data, status = 200) => Response.json(data, {status, headers: {'Cache-Control': 'no-store'}});
 const active = env => env.PIPELINE_ENABLED === 'true';
@@ -18,7 +19,7 @@ export default {
   async fetch(request, env, ctx) {
     const path = new URL(request.url).pathname;
     if (path === '/health' && request.method === 'GET') {
-      return json({service: 'wacapital-online', version: '0.1.0', enabled: active(env), databaseBound: Boolean(env.DB)});
+      return json({service: 'wacapital-online', version: '0.2.0', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
     }
     if (path === '/telegram/webhook' && request.method === 'POST') {
       if (!await secretMatches(request.headers.get('X-Telegram-Bot-Api-Secret-Token'), env.TELEGRAM_WEBHOOK_SECRET)) return json({error: 'Unauthorized'}, 401);
@@ -43,6 +44,39 @@ export default {
         const pipeline = createPipeline(env);
         if (path === '/admin/status' && request.method === 'GET') return json(await pipeline.status());
         if (path === '/admin/tick' && request.method === 'POST') return json(await pipeline.tick());
+        if (path === '/admin/media-step' && request.method === 'POST') return json(await createMedia(env).step());
+        if (path === '/admin/media-status' && request.method === 'GET') {
+          const db = store(env.DB);
+          return json({enabled: env.MEDIA_ENABLED === 'true', dailyLimit: env.DAILY_VISUAL_LIMIT || '3',
+            budget: await db.all('SELECT * FROM visual_budget ORDER BY day DESC LIMIT 2'),
+            jobs: await db.all('SELECT story_id,state,error,attempts,created_at FROM visual_jobs ORDER BY created_at DESC LIMIT 10'),
+            assets: await db.all('SELECT story_id,position,filename,delivery FROM visual_assets ORDER BY rowid DESC LIMIT 60')});
+        }
+        const mediaPath = path.match(/^\/admin\/media\/([a-f0-9]{32})(?:\/(enqueue|manifest|retry|[0-5]))?$/);
+        if (mediaPath) {
+          const [, id, action] = mediaPath, db = store(env.DB);
+          if (action === 'enqueue' && request.method === 'POST') return json({queued: await createMedia(env).enqueue(id)});
+          if (action === 'retry' && request.method === 'POST') return json({resumed: await createMedia(env).retry(id)});
+          if (!action && request.method === 'GET') return json(await createMedia(env).status(id));
+          if (action === 'manifest' && request.method === 'GET') {
+            const row = await db.first('SELECT manifest FROM visual_jobs WHERE story_id=?', id);
+            return row?.manifest ? json(JSON.parse(row.manifest)) : json({error: 'Not ready'}, 404);
+          }
+          if (/^[0-5]$/.test(action || '') && request.method === 'GET') {
+            const row = await db.first('SELECT png,file_id,filename FROM visual_assets WHERE story_id=? AND position=?', id, Number(action));
+            if (!row) return json({error: 'Not found'}, 404);
+            let bytes;
+            if (row.png) bytes = new Uint8Array(row.png);
+            else if (row.file_id) {
+              const target = await telegram(env, network()).download(row.file_id);
+              const response = await fetch(target, {redirect: 'manual', signal: AbortSignal.timeout(15_000)});
+              if (!response.ok || Number(response.headers.get('content-length') || 0) > 1_900_000) throw new Error('Image unavailable');
+              bytes = new Uint8Array(await response.arrayBuffer());
+            }
+            if (!bytes || bytes.length > 1_900_000) throw new Error('Image unavailable');
+            return new Response(bytes, {headers: {'Content-Type': 'image/png', 'Cache-Control': 'private, no-store', 'Content-Disposition': 'attachment; filename="' + row.filename + '"'}});
+          }
+        }
         if (path === '/admin/telegram-info' && request.method === 'GET') {
           if (!env.TELEGRAM_BOT_TOKEN) return json({configured: false});
           const info = await telegram(env, network()).info();
@@ -65,7 +99,13 @@ export default {
     }
     return json({error: 'Not found'}, 404);
   },
-  async scheduled(_event, env, ctx) {
-    if (active(env) && env.DB) ctx.waitUntil(createPipeline(env).tick());
+  async scheduled(event, env, ctx) {
+    if (active(env) && env.DB) {
+      // Media advances one durable step per minute. News intake stays at its
+      // original ten-minute cadence, so this does not increase LLM requests.
+      const minute = new Date(event.scheduledTime).getUTCMinutes();
+      if (minute % 10 === 3) ctx.waitUntil(createPipeline(env).tick());
+      else if (env.MEDIA_ENABLED === 'true') ctx.waitUntil(createMedia(env).step());
+    }
   }
 };
