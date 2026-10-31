@@ -8,8 +8,8 @@ el PC apagado, aceptando límites gratuitos. La ejecución local no es el destin
 Actualización: la adaptación en [online](../online/README.md) está desplegada en
 Cloudflare Free, con cola privada D1 independiente del archivo de Supabase.
 Pasan 18 pruebas online, además de las 12 de recuperación Python. Se completó
-la autorización, la conexión del bot y el primer envío real. El historial de
-esta recuperación y los pendientes de validación humana están en el
+la autorización, la conexión del bot, el primer envío real, la aprobación del
+propietario y la entrega del archivo. El historial de esta recuperación está en el
 [registro del despliegue](DESPLIEGUE-2026-10-31.md).
 
 ## Identidad y ubicaciones verificadas

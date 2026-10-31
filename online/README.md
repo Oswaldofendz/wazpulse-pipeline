@@ -7,8 +7,9 @@ guion TikTok/Shorts y dirección visual. La publicación en redes es manual.
 
 Estado al 31 de octubre de 2026: desplegado en Cloudflare Free, D1 conectado,
 recolección y análisis activados; Telegram conectado. Se confirmó una primera
-noticia analizada y enviada al propietario. La prueba de aprobación/archivo
-se documenta en [el registro del despliegue](../docs/DESPLIEGUE-2026-10-31.md).
+noticia analizada y enviada al propietario, su aprobación y la entrega del
+archivo. La prueba completa se documenta en
+[el registro del despliegue](../docs/DESPLIEGUE-2026-10-31.md).
 
 ## Alojamiento y costes
 

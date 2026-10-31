@@ -20,8 +20,9 @@
   notificación, sin intervención manual. Presupuesto usado: 2/6 llamadas.
 - Comprobación pública: /health devuelve 200; administración y webhook sin
   autenticación devuelven 401.
-- La aprobación y recepción del archivo por el propietario están pendientes
-  de confirmación al redactar esta primera versión del registro.
+- El propietario confirmó en el chat que aprobó y recibió el archivo.
+  D1 confirma un material en estado approved y pack_delivery=sent.
+  La bandeja registra los eventos procesados como done.
 
 ## Acceso y secretos
 
@@ -62,7 +63,8 @@ credenciales antes de usar los secretos internos.
 - Compilación y despliegue confirmados por Cloudflare.
 - Prueba real de recolección, IA y envío a Telegram confirmada.
 - Horario automático comprobado en producción.
-- Pendiente: botón humano de aprobación y confirmación de paquete recibido.
+- Aprobación humana y recepción del archivo confirmadas por el propietario
+  y contrastadas con los estados del servicio. Flujo completo verificado.
 
 ## Referencias
 
