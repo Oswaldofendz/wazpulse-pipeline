@@ -27,6 +27,7 @@ from typing import Optional
 import requests
 
 from . import config
+from .review_policy import authorized_callback, matching_review_message
 from .supabase_client import get_client
 
 log = logging.getLogger("telegram-bot")
@@ -318,20 +319,26 @@ def _apply_action(action: str, post_id: int, headline_for_msg: str, chat_id: int
     headline_short = _escape_html(headline_for_msg[:200])
 
     if action == "approve":
-        client.table("pulse_posts").update({
+        result = client.table("pulse_posts").update({
             "status":           "approved",
             "approved_by_user": True,
             "approved_at":      now_iso,
-        }).eq("id", post_id).execute()
+        }).eq("id", post_id).eq("status", "pending_approval").eq("telegram_message_id", message_id).execute()
+        if not result.data:
+            return "La noticia ya no está pendiente de aprobación"
         _edit_message_text(chat_id, message_id,
             f"✅ <b>Aprobado</b> a las {hh_mm} UTC\n\n<i>{headline_short}</i>")
         return "✅ Aprobado"
 
     if action == "reject":
-        client.table("pulse_posts").update({
+        result = client.table("pulse_posts").update({
             "status":           "rejected",
             "rejection_reason": "manual",
-        }).eq("id", post_id).execute()
+            "approved_by_user": False,
+            "approved_at": None,
+        }).eq("id", post_id).eq("status", "pending_approval").eq("telegram_message_id", message_id).execute()
+        if not result.data:
+            return "La noticia ya no está pendiente de aprobación"
         _edit_message_text(chat_id, message_id,
             f"❌ <b>Rechazado</b> a las {hh_mm} UTC\n\n<i>{headline_short}</i>")
         return "❌ Rechazado"
@@ -623,18 +630,26 @@ def process_callbacks() -> dict:
         chat_id    = (message.get("chat") or {}).get("id")
         message_id = message.get("message_id")
 
-        if ":" not in data:
-            _answer_callback(cb_id, "callback_data inválida")
+        if not authorized_callback(cb, config.TELEGRAM_CHAT_ID, config.TELEGRAM_APPROVER_ID):
             stats["ignored"] += 1
             continue
 
-        action, post_id_str = data.split(":", 1)
+        # Bind every action, including prompt delivery, to the original review.
         try:
+            action, post_id_str = data.split(":", 1)
             post_id = int(post_id_str)
-        except ValueError:
-            _answer_callback(cb_id, "post_id inválido")
+        except (ValueError, TypeError):
             stats["ignored"] += 1
             continue
+        if action not in {"approve", "reject", "skip", "prompts", "pt_twitter", "pt_instagram", "pt_tiktok", "pt_youtube", "pt_cancel"}:
+            stats["ignored"] += 1
+            continue
+        review = client.table("pulse_posts").select("status, headline, telegram_message_id").eq("id", post_id).limit(1).execute()
+        rows = review.data or []
+        if not rows or not matching_review_message(rows[0], message_id):
+            stats["ignored"] += 1
+            continue
+        post = rows[0]
 
         # ── Prompts callbacks (2-step platform selector) ──────────────────
         if action == "prompts" or action.startswith("pt_"):
@@ -643,20 +658,11 @@ def process_callbacks() -> dict:
             continue
 
         # ── Moderation callbacks (approve / reject / skip) ────────────────
-        # Fetch headline so the post-action message remains informative.
-        res = client.table("pulse_posts").select("status, headline").eq("id", post_id).limit(1).execute()
-        rows = res.data or []
-        if not rows:
-            _answer_callback(cb_id, "Post no encontrado")
-            stats["ignored"] += 1
-            continue
-        post = rows[0]
-
         try:
             label = _apply_action(action, post_id, post.get("headline") or "", chat_id, message_id)
             _answer_callback(cb_id, label)
-            if action == "approve": stats["approved"] += 1
-            elif action == "reject": stats["rejected"] += 1
+            if action == "approve" and label == "✅ Aprobado": stats["approved"] += 1
+            elif action == "reject" and label == "❌ Rechazado": stats["rejected"] += 1
             elif action == "skip":   stats["skipped"]  += 1
             else:                    stats["ignored"]  += 1
             log.info("  post %d → %s", post_id, label)

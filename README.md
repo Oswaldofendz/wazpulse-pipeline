@@ -1,5 +1,10 @@
 # wazpulse-pipeline
 
+> **Recuperación WaCapital · 31 octubre 2026:** el README histórico de abajo
+> está desactualizado. Lee [el diagnóstico y plan actual](docs/RECUPERACION-2026-10-31.md).
+> En esta rama, publicación social y borrado automático están desactivados
+> por defecto. No se ha reactivado el bot en producción.
+
 PulseEngine for **WazPulse** — Python worker that runs every 5 min to:
 
 1. Fetch news from whitelisted RSS sources → `pulse_candidates` (Bloque 5)

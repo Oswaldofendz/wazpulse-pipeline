@@ -145,7 +145,7 @@ def tick(cycle_n):
     # Daily maintenance — gated internally by pulse_state.storage_cleanup_last_run
     # so it actually runs at most once every 24h regardless of cycle count.
     # Safe to call every tick; idempotent and error-swallowing.
-    if config.BLOQUE_ACTUAL >= 5:
+    if config.BLOQUE_ACTUAL >= 5 and config.ENABLE_STORAGE_CLEANUP:
         storage_cleanup.run_if_due()
 
 

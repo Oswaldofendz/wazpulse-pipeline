@@ -11,7 +11,7 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 # --- WaStake backend (required from Bloque 6) ---
 WASTAKE_API_URL = os.getenv(
     "WASTAKE_API_URL",
-    "https://wastake-backend-production.up.railway.app",
+    "https://wastake.onrender.com",
 )
 
 # --- Groq (optional fallback) ---
@@ -20,6 +20,11 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # --- Telegram (required from Bloque 7) ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_APPROVER_ID = os.getenv("TELEGRAM_APPROVER_ID")
+
+# Recovery is review-only by default, even if old publishing credentials exist.
+ENABLE_SOCIAL_PUBLISHING = os.getenv("ENABLE_SOCIAL_PUBLISHING", "false").lower() == "true"
+ENABLE_STORAGE_CLEANUP = os.getenv("ENABLE_STORAGE_CLEANUP", "false").lower() == "true"
 
 # --- TikTok Content Posting API (Bloque 8c) ---
 # Optional: publisher skips gracefully if not set.
