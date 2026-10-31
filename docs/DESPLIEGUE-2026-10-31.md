@@ -16,6 +16,10 @@
 - Primera recolección confirmada: ocho noticias guardadas.
 - Primera prueba con IA a las 22:38 UTC: un editorial y una notificación,
   ambos confirmados por el servicio. Telegram aceptó el envío.
+- Primer ciclo automático verificado a las 22:43 UTC: otro editorial y otra
+  notificación, sin intervención manual. Presupuesto usado: 2/6 llamadas.
+- Comprobación pública: /health devuelve 200; administración y webhook sin
+  autenticación devuelven 401.
 - La aprobación y recepción del archivo por el propietario están pendientes
   de confirmación al redactar esta primera versión del registro.
 
@@ -57,8 +61,8 @@ credenciales antes de usar los secretos internos.
 - Esquema SQLite aplicado y consultado en D1 real.
 - Compilación y despliegue confirmados por Cloudflare.
 - Prueba real de recolección, IA y envío a Telegram confirmada.
-- Pendiente: botón humano de aprobación, paquete recibido y comprobación
-  posterior del horario automático.
+- Horario automático comprobado en producción.
+- Pendiente: botón humano de aprobación y confirmación de paquete recibido.
 
 ## Referencias
 
