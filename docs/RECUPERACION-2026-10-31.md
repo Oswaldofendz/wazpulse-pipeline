@@ -5,6 +5,13 @@ Fecha de revisión: 31 de octubre de 2026.
 Decisión confirmada por Oswaldo en esta revisión: funcionamiento online con
 el PC apagado, aceptando límites gratuitos. La ejecución local no es el destino.
 
+Actualización: se implementó la primera adaptación en [online](../online/README.md)
+con una cola privada D1 independiente del archivo de Supabase. Pasan 16 pruebas
+de la versión online, además de las 12 de recuperación Python. La construcción
+oficial de Cloudflare pasa; el despliegue y la prueba real de Telegram siguen
+pendientes de acceso/configuración. No hay una sesión de Cloudflare iniciada
+y el control del navegador estaba desactivado en el momento de continuar.
+
 ## Identidad y ubicaciones verificadas
 
 WaCapital es la marca editorial. WallNews/WazPulse son nombres anteriores;

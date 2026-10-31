@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wacapital-online",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-31",
+  "workers_dev": true,
+  "observability": { "enabled": false },
+  "triggers": { "crons": ["3,13,23,33,43,53 * * * *"] },
+  "vars": {
+    "PIPELINE_ENABLED": "false",
+    "AI_ENABLED": "false",
+    "DAILY_LLM_LIMIT": "6",
+    "MIN_PRIORITY": "65",
+    "MIN_STRENGTH": "4"
+  }
+  // Before deployment, add a real D1 binding named DB using the ID returned
+  // by Cloudflare. No account/database identifier is fabricated here.
+  // Secrets: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_APPROVER_ID,
+  // TELEGRAM_WEBHOOK_SECRET, ADMIN_TOKEN. Never put them in this file.
+}

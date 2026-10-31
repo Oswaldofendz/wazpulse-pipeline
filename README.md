@@ -1,5 +1,10 @@
 # wazpulse-pipeline
 
+> **Versión online gratuita:** la adaptación para Cloudflare Workers + D1 está
+> en [online](online/README.md). Incluye recolección desde WaStake, revisión por
+> Telegram y entrega de materiales. Su activación requiere la cuenta y
+> configuración reales del propietario; no está desplegada todavía.
+
 > **Recuperación WaCapital · 31 octubre 2026:** el README histórico de abajo
 > está desactualizado. Lee [el diagnóstico y plan actual](docs/RECUPERACION-2026-10-31.md).
 > En esta rama, publicación social y borrado automático están desactivados

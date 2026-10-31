@@ -1,0 +1,6 @@
+.dev.vars
+.dev.vars.*
+.wrangler/
+node_modules/
+wrangler.local.jsonc
+preview-output/
