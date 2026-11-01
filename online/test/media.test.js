@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createMedia} from '../src/media.js';
 import {createPipeline} from '../src/pipeline.js';
-import {xPublication, visualBrief, visualHtml} from '../src/publication.js';
+import {xPublication, visualBrief, visualHtml, visualDimensions} from '../src/publication.js';
 import {minimalUpdate} from '../src/domain.js';
 import worker from '../src/worker.js';
 import {NOW, setup, callback} from './helpers.js';
@@ -55,7 +55,7 @@ test('visual brief includes actual story data and publication dimensions escape 
   const html = visualHtml(brief, JPEG);
   assert.ok(html.includes('&lt;img'));
   assert.ok(html.includes('ILUSTRACIÓN CON IA'));
-  assert.ok(html.includes('width:1200px;height:675px'));
+  assert.ok(html.includes('width:1080px;height:1350px'));
   assert.ok(visualHtml(brief, JPEG, 0).includes('width:1080px;height:1350px'));
   assert.throws(() => visualHtml(brief, '" onerror="alert(1)'));
 });
@@ -79,7 +79,7 @@ test('approved story creates a durable job only once; one illustration serves al
   assert.equal(s.mediaState.generated, 1);
   assert.equal(s.mediaState.rendered.length, 6);
   assert.equal(s.mediaState.documents.length, 6);
-  assert.deepEqual(s.mediaState.rendered[0].dimensions, {width: 1200, height: 675});
+  assert.deepEqual(s.mediaState.rendered[0].dimensions, {width: 1080, height: 1350});
   assert.deepEqual(s.mediaState.rendered[1].dimensions, {width: 1080, height: 1350});
   assert.equal((await s.media.status(s.story.id)).state, 'review');
   assert.equal((await s.media.step()).state, 'idle');
@@ -198,4 +198,41 @@ test('a replayed approval recovers a missing visual job without duplicating the 
   await s.pipeline.handleUpdate(callback(s.story));
   assert.equal(s.db.native.prepare('SELECT COUNT(*) AS n FROM visual_jobs').get().n, 1);
   assert.equal(s.state.documents.length, 1);
+});
+
+test('impact style restores white headline, cyan hook, red rule and centered WaCapital signature', async () => {
+  const s = await fixture(), story = s.db.native.prepare('SELECT * FROM stories').get();
+  const brief = visualBrief(story), html = visualHtml(brief, JPEG);
+  assert.equal(brief.version, 2);
+  assert.ok(brief.prompt.includes('photorealistic cinematic'));
+  assert.ok(html.includes('#ef4444'));
+  assert.ok(html.includes('#38bdf8'));
+  assert.ok(html.includes('class="brand">WaCapital'));
+  assert.ok(html.includes(brief.hook));
+  const legacy = {...brief, version: 1, style: undefined};
+  assert.deepEqual(visualDimensions(legacy, 0), {width: 1200, height: 675});
+  assert.ok(visualHtml(legacy, JPEG).includes('width:1200px;height:675px'));
+});
+
+test('style previews reuse their own image within the same free budget and preserve delivered approvals', async () => {
+  const s = await fixture();
+  for (let n = 0; n < 8; n++) await s.media.step();
+  const before = s.db.native.prepare('SELECT * FROM visual_jobs').get();
+  const p0 = await s.media.preview(s.story.id, 0);
+  const p1 = await s.media.preview(s.story.id, 1);
+  assert.equal(p0.state, 'preview');
+  assert.equal(p1.state, 'preview');
+  assert.equal(s.mediaState.generated, 2);
+  assert.deepEqual(s.db.native.prepare('SELECT * FROM visual_jobs').get(), before);
+  assert.equal(s.db.native.prepare('SELECT used FROM visual_budget').get().used, 2);
+  assert.equal(s.mediaState.documents.length, 6);
+});
+
+test('AI scene avoids company lettering while the composited headline preserves its exact brand', async () => {
+  const s = await fixture(), story = s.db.native.prepare('SELECT * FROM stories').get();
+  const e = JSON.parse(story.editorial); e.headline = 'Binance cubre pérdidas';
+  const brief = visualBrief({...story, title: 'Binance covers losses after hack', snippet: 'Binance issued an update.', editorial: e});
+  assert.equal(brief.title, e.headline);
+  assert.equal(/Binance/i.test(brief.prompt), false);
+  assert.ok(visualHtml(brief, JPEG).includes(e.headline));
 });

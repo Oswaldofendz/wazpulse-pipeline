@@ -1,6 +1,6 @@
 import {store} from './store.js';
 import {network, telegram, ServiceError} from './io.js';
-import {visualBrief, visualHtml} from './publication.js';
+import {visualBrief, visualHtml, visualDimensions} from './publication.js';
 
 const limit = value => /^([0-6])$/.test(String(value)) ? Number(value) : 3;
 const enabled = env => env.PIPELINE_ENABLED === 'true' && env.MEDIA_ENABLED === 'true';
@@ -55,7 +55,8 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
     const claimed = await db.first("UPDATE visual_assets SET delivery='sending' WHERE story_id=? AND position=? AND delivery='new' RETURNING *", asset.story_id, asset.position);
     if (!claimed) return false;
     try {
-      const caption = asset.position === 0 ? '🖼 Portada para X · 1200 × 675 · Ilustración con IA\n' + brief.title :
+      const dims = visualDimensions(brief, asset.position);
+      const caption = asset.position === 0 ? '🖼 Portada para X · ' + dims.width + ' × ' + dims.height + ' · Ilustración con IA\n' + brief.title :
         '📚 Carrusel · ' + asset.position + '/5 · 1080 × 1350 · Ilustración con IA';
       const result = await bot.imageDocument(new Uint8Array(claimed.png), asset.filename, caption);
       if (!result?.document?.file_id || !Number.isSafeInteger(result.message_id)) throw new ServiceError('telegram-image');
@@ -111,7 +112,7 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
           if (last && instant - JSON.parse(last.value) < 25_000) return {state: 'browser-cooldown', id: job.story_id};
           await db.set('visual_last_browser', instant);
           const html = visualHtml(brief, job.image, position - 1);
-          const png = new Uint8Array(await renderImage(html, position === 0 ? {width: 1200, height: 675} : {width: 1080, height: 1350}));
+          const png = new Uint8Array(await renderImage(html, visualDimensions(brief, position)));
           if (png.length < 8 || png.length > 1_900_000 || ![137,80,78,71,13,10,26,10].every((n, i) => png[i] === n)) throw new ServiceError('png-size-or-format');
           const filename = 'WaCapital-' + story.id.slice(0, 8) + (position === 0 ? '-X.png' : '-carrusel-' + position + '.png');
           await db.run('INSERT INTO visual_assets(story_id,position,filename,png) VALUES(?,?,?,?)', story.id, position, filename, png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength));
@@ -190,5 +191,36 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
     await db.run("UPDATE visual_jobs SET state='rendering',error=NULL,lease_until=0 WHERE story_id=? AND state='blocked'", id);
     return true;
   }
-  return {enqueue, step, status, review, resend, retry};
+  async function preview(id, position = 0) {
+    if (!enabled(env)) return {state: 'disabled'};
+    const owner = crypto.randomUUID(), instant = now();
+    if (!await db.lock('visual', owner, instant, 90_000)) return {state: 'busy'};
+    try {
+      const story = await db.first("SELECT * FROM stories WHERE id=? AND state='approved'", id);
+      if (!story) return {state: 'approval-required'};
+      const last = await db.first("SELECT value FROM runtime WHERE key='visual_last_browser'");
+      if (last && instant - JSON.parse(last.value) < 25_000) return {state: 'browser-cooldown'};
+      // Preview has its own cache. It never resets a delivered job, deletes an
+      // old image, or changes the approval of a previous version.
+      const previewBrief = visualBrief(story);
+      const promptHash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(previewBrief.prompt)))].slice(0,8).map(n => n.toString(16).padStart(2,'0')).join('');
+      const key = 'visual_preview:impact-v2:' + id + ':' + promptHash;
+      const cached = await db.first('SELECT value FROM runtime WHERE key=?', key);
+      let saved = cached ? JSON.parse(cached.value) : null;
+      if (!saved) {
+        const day = new Date(instant).toISOString().slice(0, 10);
+        await db.run('INSERT OR IGNORE INTO visual_budget(day,used) VALUES(?,0)', day);
+        if (!await db.first('UPDATE visual_budget SET used=used+1 WHERE day=? AND used<? RETURNING used', day, limit(env.DAILY_VISUAL_LIMIT))) return {state: 'daily-limit'};
+        const brief = previewBrief;
+        saved = {brief, image: await generateImage(brief)};
+        visualHtml(brief, saved.image);
+        await db.set(key, saved);
+      }
+      await db.set('visual_last_browser', instant);
+      const png = new Uint8Array(await renderImage(visualHtml(saved.brief, saved.image, position - 1), visualDimensions(saved.brief, position)));
+      if (png.length < 8 || png.length > 1_900_000 || ![137,80,78,71,13,10,26,10].every((n,i) => png[i] === n)) throw new ServiceError('png-size-or-format');
+      return {state: 'preview', png};
+    } finally { await db.unlock('visual', owner); }
+  }
+  return {enqueue, step, status, review, resend, retry, preview};
 }

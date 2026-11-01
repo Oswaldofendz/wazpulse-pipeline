@@ -52,6 +52,12 @@ export default {
             jobs: await db.all('SELECT story_id,state,error,attempts,created_at FROM visual_jobs ORDER BY created_at DESC LIMIT 10'),
             assets: await db.all('SELECT story_id,position,filename,delivery FROM visual_assets ORDER BY rowid DESC LIMIT 60')});
         }
+        const previewPath = path.match(/^\/admin\/media\/([a-f0-9]{32})\/preview\/([0-5])$/);
+        if (previewPath && request.method === 'POST') {
+          const result = await createMedia(env).preview(previewPath[1], Number(previewPath[2]));
+          if (result.state !== 'preview') return json({state: result.state}, 409);
+          return new Response(result.png, {headers: {'Content-Type': 'image/png', 'Cache-Control': 'private, no-store'}});
+        }
         const mediaPath = path.match(/^\/admin\/media\/([a-f0-9]{32})(?:\/(enqueue|manifest|retry|[0-5]))?$/);
         if (mediaPath) {
           const [, id, action] = mediaPath, db = store(env.DB);
