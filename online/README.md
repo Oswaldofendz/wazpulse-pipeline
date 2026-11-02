@@ -11,6 +11,10 @@ aprobación. Consulta [el funcionamiento, límites y recuperación](../docs/IMAG
 La plantilla mantiene MEDIA_ENABLED=false; la configuración privada de la
 cuenta real determina si está activada.
 
+La actualización del 02/11 incorpora [variedad de escenas, paletas y composiciones](../docs/VARIEDAD-VISUAL-2026-11-02.md)
+y [limpieza automática con protección de espacio](../docs/ALMACENAMIENTO-2026-11-02.md).
+Los originales ya entregados mantienen su diseño y aprobación.
+
 Estado al 31 de octubre de 2026: desplegado en Cloudflare Free, D1 conectado,
 recolección y análisis activados; Telegram conectado. Se confirmó una primera
 noticia analizada y enviada al propietario, su aprobación y la entrega del

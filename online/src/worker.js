@@ -3,6 +3,7 @@ import {readBounded, network, telegram} from './io.js';
 import {store} from './store.js';
 import {createPipeline} from './pipeline.js';
 import {createMedia} from './media.js';
+import {createStorage} from './storage.js';
 
 const json = (data, status = 200) => Response.json(data, {status, headers: {'Cache-Control': 'no-store'}});
 const active = env => env.PIPELINE_ENABLED === 'true';
@@ -45,6 +46,9 @@ export default {
         if (path === '/admin/status' && request.method === 'GET') return json(await pipeline.status());
         if (path === '/admin/tick' && request.method === 'POST') return json(await pipeline.tick());
         if (path === '/admin/media-step' && request.method === 'POST') return json(await createMedia(env).step());
+        if (path === '/admin/storage-status' && request.method === 'GET') return json(await createStorage(env).status());
+        if (path === '/admin/storage-plan' && request.method === 'GET') return json(await createStorage(env).plan());
+        if (path === '/admin/storage-cleanup' && request.method === 'POST') return json(await createStorage(env).cleanup());
         if (path === '/admin/media-status' && request.method === 'GET') {
           const db = store(env.DB);
           return json({enabled: env.MEDIA_ENABLED === 'true', dailyLimit: env.DAILY_VISUAL_LIMIT || '3',
@@ -110,7 +114,8 @@ export default {
       // Media advances one durable step per minute. News intake stays at its
       // original ten-minute cadence, so this does not increase LLM requests.
       const minute = new Date(event.scheduledTime).getUTCMinutes();
-      if (minute % 10 === 3) ctx.waitUntil(createPipeline(env).tick());
+      if (minute === 1) ctx.waitUntil(createStorage(env).cleanup());
+      else if (minute % 10 === 3) ctx.waitUntil(createPipeline(env).tick());
       else if (env.MEDIA_ENABLED === 'true') ctx.waitUntil(createMedia(env).step());
     }
   }

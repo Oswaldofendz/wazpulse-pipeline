@@ -14,7 +14,7 @@ export function database() {
           args = args.map(value => value instanceof ArrayBuffer ? new Uint8Array(value) : value);
           return {
             async first() { return stmt.get(...args) || null; },
-            async all() { return {results: stmt.all(...args)}; },
+            async all() { return {results: stmt.all(...args), meta: {size_after: Number(native.prepare('PRAGMA page_count').get().page_count) * Number(native.prepare('PRAGMA page_size').get().page_size)}}; },
             async run() {
               const result = stmt.run(...args);
               return {meta: {changes: Number(result.changes)}};

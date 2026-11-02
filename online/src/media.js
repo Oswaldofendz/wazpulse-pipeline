@@ -1,11 +1,13 @@
 import {store} from './store.js';
 import {network, telegram, ServiceError} from './io.js';
 import {visualBrief, visualHtml, visualDimensions} from './publication.js';
+import {createStorage} from './storage.js';
 
 const limit = value => /^([0-6])$/.test(String(value)) ? Number(value) : 3;
 const enabled = env => env.PIPELINE_ENABLED === 'true' && env.MEDIA_ENABLED === 'true';
 export function createMedia(env, {fetcher = fetch, now = Date.now, render, generate} = {}) {
   const db = store(env.DB), bot = telegram(env, network(fetcher));
+  const storage = createStorage(env, {fetcher, now});
   const getJob = id => db.first('SELECT * FROM visual_jobs WHERE story_id=?', id);
 
   async function enqueue(id) {
@@ -82,6 +84,7 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
       if (!story) throw new ServiceError('approval-required');
       if (job.state === 'queued') {
         stage = 'generation';
+        if (!await storage.allow()) return {state: 'storage-paused', id: job.story_id};
         if (!env.AI && !generate || !env.BROWSER && !render) throw new ServiceError('media-binding');
         const day = new Date(instant).toISOString().slice(0, 10);
         await db.run('INSERT OR IGNORE INTO visual_budget(day,used) VALUES(?,0)', day);
@@ -91,7 +94,9 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
         // Count attempts before AI. A crash cannot run up the free quota.
         await db.run('UPDATE visual_jobs SET attempts=attempts+1,lease_until=? WHERE story_id=?', instant + 120_000, job.story_id);
         if (job.attempts >= 2) throw new ServiceError('generation-attempts');
-        const brief = visualBrief(story), image = await generateImage(brief);
+        const priorJobs = await db.all('SELECT manifest FROM visual_jobs WHERE manifest IS NOT NULL ORDER BY created_at DESC,story_id DESC LIMIT 3');
+        const recent = priorJobs.flatMap(row => {try {return [JSON.parse(row.manifest)];} catch {return [];}});
+        const brief = visualBrief(story, {recent}), image = await generateImage(brief);
         // HTML validation rejects malformed/oversize image payloads, too.
         visualHtml(brief, image);
         await db.run("UPDATE visual_jobs SET state='rendering',manifest=?,image=?,lease_until=0,error=NULL WHERE story_id=?", JSON.stringify(brief), image, job.story_id);
@@ -108,6 +113,7 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
         if (asset?.delivery === 'sent') continue;
         stage = 'render-' + position;
         if (!asset) {
+          if (!await storage.allow(1_900_000)) return {state: 'storage-paused', id: job.story_id};
           const last = await db.first("SELECT value FROM runtime WHERE key='visual_last_browser'");
           if (last && instant - JSON.parse(last.value) < 25_000) return {state: 'browser-cooldown', id: job.story_id};
           await db.set('visual_last_browser', instant);
@@ -125,6 +131,7 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
         return {state: delivered ? 'asset-delivered' : 'delivery-needs-review', id: job.story_id, position};
       }
       stage = 'final-review';
+      await storage.delivered(story.id);
       // A lost response here must not create duplicate approval messages.
       await db.run("UPDATE visual_jobs SET state='review',error='review-sending' WHERE story_id=? AND state='rendering'", story.id);
       const result = await bot.send('✅ Material visual preparado\n\n' + brief.x.text +
@@ -204,10 +211,11 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
       // old image, or changes the approval of a previous version.
       const previewBrief = visualBrief(story);
       const promptHash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(previewBrief.prompt)))].slice(0,8).map(n => n.toString(16).padStart(2,'0')).join('');
-      const key = 'visual_preview:impact-v2:' + id + ':' + promptHash;
+      const key = 'visual_preview:' + previewBrief.style + ':' + id + ':' + promptHash;
       const cached = await db.first('SELECT value FROM runtime WHERE key=?', key);
       let saved = cached ? JSON.parse(cached.value) : null;
       if (!saved) {
+        if (!await storage.allow()) return {state: 'storage-paused'};
         const day = new Date(instant).toISOString().slice(0, 10);
         await db.run('INSERT OR IGNORE INTO visual_budget(day,used) VALUES(?,0)', day);
         if (!await db.first('UPDATE visual_budget SET used=used+1 WHERE day=? AND used<? RETURNING used', day, limit(env.DAILY_VISUAL_LIMIT))) return {state: 'daily-limit'};
@@ -215,7 +223,9 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
         saved = {brief, image: await generateImage(brief)};
         visualHtml(brief, saved.image);
         await db.set(key, saved);
+        await storage.rememberPreview(key);
       }
+      else await storage.rememberPreview(key);
       await db.set('visual_last_browser', instant);
       const png = new Uint8Array(await renderImage(visualHtml(saved.brief, saved.image, position - 1), visualDimensions(saved.brief, position)));
       if (png.length < 8 || png.length > 1_900_000 || ![137,80,78,71,13,10,26,10].every((n,i) => png[i] === n)) throw new ServiceError('png-size-or-format');

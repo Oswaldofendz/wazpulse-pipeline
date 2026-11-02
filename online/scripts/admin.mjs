@@ -7,6 +7,9 @@ const routes = {
   tick: ['/admin/tick', 'POST'],
   'media-status': ['/admin/media-status', 'GET'],
   'media-step': ['/admin/media-step', 'POST'],
+  'storage-status': ['/admin/storage-status', 'GET'],
+  'storage-plan': ['/admin/storage-plan', 'GET'],
+  'storage-cleanup': ['/admin/storage-cleanup', 'POST'],
   'telegram-info': ['/admin/telegram-info', 'GET'],
   'telegram-connect': ['/admin/telegram-connect', 'POST']
 };

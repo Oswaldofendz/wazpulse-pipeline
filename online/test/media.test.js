@@ -200,18 +200,21 @@ test('a replayed approval recovers a missing visual job without duplicating the 
   assert.equal(s.state.documents.length, 1);
 });
 
-test('impact style restores white headline, cyan hook, red rule and centered WaCapital signature', async () => {
+test('varied impact style keeps attribution and preserves both previous renderers', async () => {
   const s = await fixture(), story = s.db.native.prepare('SELECT * FROM stories').get();
   const brief = visualBrief(story), html = visualHtml(brief, JPEG);
-  assert.equal(brief.version, 2);
+  assert.equal(brief.version, 3);
   assert.ok(brief.prompt.includes('photorealistic cinematic'));
-  assert.ok(html.includes('#ef4444'));
-  assert.ok(html.includes('#38bdf8'));
+  assert.ok(html.includes(brief.art.rule));
+  assert.ok(html.includes(brief.art.accent));
   assert.ok(html.includes('class="brand">WaCapital'));
   assert.ok(html.includes(brief.hook));
   const legacy = {...brief, version: 1, style: undefined};
   assert.deepEqual(visualDimensions(legacy, 0), {width: 1200, height: 675});
   assert.ok(visualHtml(legacy, JPEG).includes('width:1200px;height:675px'));
+  const v2 = {...brief, version: 2, style: 'impact-v2'};
+  assert.ok(visualHtml(v2, JPEG).includes('#ef4444'));
+  assert.deepEqual(visualDimensions(v2), {width: 1080, height: 1350});
 });
 
 test('style previews reuse their own image within the same free budget and preserve delivered approvals', async () => {
