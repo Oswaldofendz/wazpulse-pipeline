@@ -44,3 +44,8 @@ para la referencia `e43243d6` devolvió `prepared: true`: Telegram confirmó tan
 el documento original como el mensaje nuevo. No se publicó nada en X ni se
 gastó otra ilustración. Los botones de mensajes antiguos siguen apuntando a
 sus textos originales; se debe usar el mensaje nuevo o `/publicar ID`.
+
+Por petición posterior del propietario se retira la coletilla automática
+«Información, no asesoramiento.» del texto de noticias para X. El borrador
+contiene únicamente la redacción seleccionada, sin ese sufijo. Esta corrección
+no requiere regenerar la imagen ni alterar el manifiesto de un paquete anterior.

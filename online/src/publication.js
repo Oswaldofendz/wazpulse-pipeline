@@ -26,9 +26,8 @@ export function coverSubtitle(editorial) {
 // Keep complete units of approved copy; never truncate words or append ellipses.
 export function xPublication(story) {
   const e = typeof story.editorial === 'string' ? JSON.parse(story.editorial) : story.editorial;
-  const suffix = '\n\nInformación, no asesoramiento.';
   const tweet = withoutLinks(e.tweet), headline = withoutLinks(e.headline);
-  const fits = value => complete(value) && twitterText.parseTweet(value + suffix).valid;
+  const fits = value => complete(value) && twitterText.parseTweet(value).valid;
   let copy = fits(tweet) ? tweet : '', strategy = 'full';
   if (!copy) {
     strategy = 'complete-sentences';
@@ -40,7 +39,7 @@ export function xPublication(story) {
   }
   if (!copy) return {text: tweet || headline, weightedLength: twitterText.parseTweet(tweet || headline).weightedLength,
     composeUrl: null, ready: false, strategy: 'needs-edit', sourceUrl: story.source_url};
-  const text = copy + suffix;
+  const text = copy;
   const result = twitterText.parseTweet(text);
   if (!result.valid || result.weightedLength > 280) throw new Error('Invalid X publication');
   const composeUrl = 'https://twitter.com/intent/tweet?text=' + encodeURIComponent(text);

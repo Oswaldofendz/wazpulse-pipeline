@@ -23,7 +23,7 @@ test('a non-redundant approved hook stays unchanged',()=>{
 test('X keeps all copy when it fits without the source URL, including a complete closing sentence',()=>{
   const tweet='Binance reabre los retiros por fases, empezando por Bitcoin. El alcance de la reapertura debe contrastarse con el comunicado original antes de interpretar su efecto en el mercado.';
   const result=xPublication(story({tweet}));
-  assert.equal(result.text,tweet+'\n\nInformación, no asesoramiento.');
+  assert.equal(result.text,tweet);
   assert.equal(result.strategy,'full');
   assert.ok(result.weightedLength<=280);
   assert.equal(new URL(result.composeUrl).searchParams.get('text'),result.text);

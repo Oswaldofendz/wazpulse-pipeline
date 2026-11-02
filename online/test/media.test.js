@@ -40,7 +40,7 @@ test('X uses complete approved headlines instead of cropping emoji, CJK or long 
     assert.equal(result.text.includes(row.source_url), false);
     assert.equal(result.sourceUrl, row.source_url);
     assert.ok(result.text.includes(e.headline));
-    assert.ok(result.text.endsWith('Información, no asesoramiento.'));
+    assert.equal(result.text.includes('Información, no asesoramiento.'),false);
     if (result.composeUrl) assert.equal(new URL(result.composeUrl).searchParams.get('text'), result.text);
     else assert.ok(('https://twitter.com/intent/tweet?text=' + encodeURIComponent(result.text)).length > 2000);
     assert.equal(result.text.includes('\ufffd'), false);
