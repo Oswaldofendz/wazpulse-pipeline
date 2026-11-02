@@ -98,7 +98,7 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
       await bot.send('WaCapital · ' + (active() ? 'Activo' : 'Pausado') +
         '\nLlamadas editoriales hoy: ' + result.dailyBackendCalls + '/' + result.dailyLimit +
         '\nEstados: ' + result.states.map(x => x.state + ': ' + x.count).join(', ') +
-        '\n/pendientes · /paquetes · /revisar ID · /paquete ID · /imagenes ID · /reenviar ID · /publicar ID');
+        '\n/pendientes · /paquetes · /revisar ID · /paquete ID · /imagenes ID · /reenviar ID · /publicar ID · /redes ID');
     } else if (command === '/pendientes') {
       const rows = await db.all("SELECT id,title FROM stories WHERE state IN ('ready','pending') AND published_at>=? ORDER BY priority DESC LIMIT 5", now() - DAY);
       await bot.send(rows.length ? rows.map(x => x.title.slice(0, 180) + '\n/revisar ' + x.id).join('\n\n') : 'No hay materiales pendientes recientes.');
@@ -119,6 +119,8 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
       if (!await media.resend(command.split(' ')[1])) await bot.send('No hay imágenes disponibles para reenviar.');
     } else if (/^\/publicar [a-f0-9]{32}$/.test(command || '')) {
       if (!await media.prepareX(command.split(' ')[1])) await bot.send('Primero aprueba la versión visual y confirma la entrega de su portada. No se ha publicado nada.');
+    } else if (/^\/redes [a-f0-9]{32}$/.test(command || '')) {
+      if(!await media.sendSocial(command.split(' ')[1]))await bot.send('Elige una noticia cuyo texto ya hayas aprobado. No se ha publicado nada.');
     }
   }
 

@@ -16,6 +16,10 @@ y [limpieza automática con protección de espacio](../docs/ALMACENAMIENTO-2026-
 Los originales ya entregados mantienen su diseño y aprobación.
 El [flujo actualizado para X](../docs/PUBLICACION-X-2026-11-02.md) conserva frases
 completas y entrega la portada del mismo trabajo junto al borrador sin enlace.
+La [segunda fase para otras redes](../docs/REDES-2026-11-02.md) prepara cinco
+láminas adaptadas a Instagram y TikTok, captions y guion corto. El comando
+/redes ID entrega el documento de borrador de una noticia aprobada, sin llamar
+otra vez a IA. Todavía no produce voz ni MP4 ni publica en esas redes.
 
 Estado al 31 de octubre de 2026: desplegado en Cloudflare Free, D1 conectado,
 recolección y análisis activados; Telegram conectado. Se confirmó una primera

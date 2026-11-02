@@ -1,6 +1,12 @@
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 
+export async function decodeUpload(options){
+  if(options.body instanceof ArrayBuffer && new Headers(options.headers).get('Content-Type')?.startsWith('multipart/form-data'))
+    return {...options,body:await new Response(options.body,{headers:options.headers}).formData()};
+  return options;
+}
+
 export function database() {
   const native = new DatabaseSync(':memory:');
   native.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
@@ -57,6 +63,7 @@ export function setup(overrides = {}) {
     TELEGRAM_BOT_TOKEN: 'test-only', ...overrides
   };
   const fetcher = async (url, options = {}) => {
+    options=await decodeUpload(options);
     state.calls.push({url, options});
     if (url.endsWith('/api/market/impact-alerts')) return Response.json({status: 'ok', alerts: state.news});
     if (url.endsWith('/api/analysis/news-angle')) {

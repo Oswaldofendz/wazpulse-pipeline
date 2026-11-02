@@ -57,17 +57,30 @@ export default {
             assets: await db.all('SELECT story_id,position,filename,delivery FROM visual_assets ORDER BY rowid DESC LIMIT 60')});
         }
         const previewPath = path.match(/^\/admin\/media\/([a-f0-9]{32})\/preview\/([0-5])$/);
+        const socialPath=path.match(/^\/admin\/media\/([a-f0-9]{32})\/social-(preview|deliver)\/(instagram|tiktok)\/([1-5])$/);
+        if(socialPath&&request.method==='POST'){
+          const [,id,action,platform,n]=socialPath,media=createMedia(env);
+          if(action==='deliver')return json(await media.deliverPreview(id,platform,Number(n)-1));
+          const result=await media.preview(id,Number(n),{reuseOnly:true,platform});
+          return result.state==='preview'?new Response(result.png,{headers:{'Content-Type':'image/png','Cache-Control':'private, no-store'}}):json({state:result.state},409);
+        }
         if (previewPath && request.method === 'POST') {
           const result = await createMedia(env).preview(previewPath[1], Number(previewPath[2]));
           if (result.state !== 'preview') return json({state: result.state}, 409);
           return new Response(result.png, {headers: {'Content-Type': 'image/png', 'Cache-Control': 'private, no-store'}});
         }
-        const mediaPath = path.match(/^\/admin\/media\/([a-f0-9]{32})(?:\/(enqueue|manifest|retry|x-package|[0-5]))?$/);
+        const mediaPath = path.match(/^\/admin\/media\/([a-f0-9]{32})(?:\/(enqueue|manifest|retry|x-package|test-send|social-pack|social-send|[0-5]))?$/);
         if (mediaPath) {
           const [, id, action] = mediaPath, db = store(env.DB);
           if (action === 'enqueue' && request.method === 'POST') return json({queued: await createMedia(env).enqueue(id)});
           if (action === 'retry' && request.method === 'POST') return json({resumed: await createMedia(env).retry(id)});
           if (action === 'x-package' && request.method === 'POST') return json({prepared: await createMedia(env).prepareX(id)});
+          if(action==='test-send'&&request.method==='POST')return json(await createMedia(env).deliverPreview(id));
+          if(action==='social-pack'&&request.method==='GET'){
+            const kit=await createMedia(env).social(id);
+            return kit?json(kit):json({error:'Approval required'},409);
+          }
+          if(action==='social-send'&&request.method==='POST')return json({prepared:await createMedia(env).sendSocial(id)});
           if (!action && request.method === 'GET') return json(await createMedia(env).status(id));
           if (action === 'manifest' && request.method === 'GET') {
             const row = await db.first('SELECT manifest FROM visual_jobs WHERE story_id=?', id);

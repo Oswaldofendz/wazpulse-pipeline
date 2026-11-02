@@ -2,6 +2,7 @@ import {store} from './store.js';
 import {network, telegram, ServiceError} from './io.js';
 import {visualBrief, visualHtml, visualDimensions, xPublication} from './publication.js';
 import {createStorage} from './storage.js';
+import {socialKit, socialText, socialHtml, socialDimensions} from './social.js';
 
 const limit = value => /^([0-6])$/.test(String(value)) ? Number(value) : 3;
 const enabled = env => env.PIPELINE_ENABLED === 'true' && env.MEDIA_ENABLED === 'true';
@@ -215,7 +216,7 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
     await db.run("UPDATE visual_jobs SET state='rendering',error=NULL,lease_until=0 WHERE story_id=? AND state='blocked'", id);
     return true;
   }
-  async function preview(id, position = 0) {
+  async function preview(id, position = 0, {reuseOnly=false, platform=null} = {}) {
     if (!enabled(env)) return {state: 'disabled'};
     const owner = crypto.randomUUID(), instant = now();
     if (!await db.lock('visual', owner, instant, 90_000)) return {state: 'busy'};
@@ -228,9 +229,18 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
       // old image, or changes the approval of a previous version.
       const previewBrief = visualBrief(story);
       const promptHash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(previewBrief.prompt)))].slice(0,8).map(n => n.toString(16).padStart(2,'0')).join('');
-      const key = 'visual_preview:' + previewBrief.style + ':' + id + ':' + promptHash;
+      let key = 'visual_preview:' + previewBrief.style + ':' + id + ':' + promptHash;
       const cached = await db.first('SELECT value FROM runtime WHERE key=?', key);
       let saved = cached ? JSON.parse(cached.value) : null;
+      if (!saved && reuseOnly) {
+        const prior=await db.first('SELECT key,value FROM runtime WHERE key GLOB ? ORDER BY rowid DESC LIMIT 1','visual_preview:impact-v3:'+id+':*');
+        if(prior){key=prior.key;saved=JSON.parse(prior.value);}
+        else {
+          const job=await getJob(id);
+          if(job?.image){saved={image:job.image};key=null;}
+        }
+        if(!saved) return {state:'image-unavailable'};
+      }
       if (!saved) {
         if (!await storage.allow()) return {state: 'storage-paused'};
         const day = new Date(instant).toISOString().slice(0, 10);
@@ -243,15 +253,58 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
         await storage.rememberPreview(key);
       }
       else {
-        await storage.rememberPreview(key);
+        if(key) await storage.rememberPreview(key);
         // Typography-only corrections reuse the illustration, even at the daily cap.
         saved = {...saved, brief: previewBrief};
       }
       await db.set('visual_last_browser', instant);
-      const png = new Uint8Array(await renderImage(visualHtml(saved.brief, saved.image, position - 1), visualDimensions(saved.brief, position)));
+      const html=platform?socialHtml(socialKit(story),saved.image,position-1,platform):visualHtml(saved.brief,saved.image,position-1);
+      const dimensions=platform?socialDimensions(platform):visualDimensions(saved.brief,position);
+      const png = new Uint8Array(await renderImage(html,dimensions));
       if (png.length < 8 || png.length > 1_900_000 || ![137,80,78,71,13,10,26,10].every((n,i) => png[i] === n)) throw new ServiceError('png-size-or-format');
       return {state: 'preview', png};
     } finally { await db.unlock('visual', owner); }
   }
-  return {enqueue, step, status, review, resend, retry, preview, prepareX};
+
+  async function social(id) {
+    if(!enabled(env)) return null;
+    const story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",id);
+    return story?socialKit(story):null;
+  }
+  async function sendSocial(id) {
+    const kit=await social(id);
+    if(!kit) return false;
+    await bot.document(socialText(kit),'WaCapital-'+id.slice(0,8)+'-redes-borrador.txt');
+    return true;
+  }
+  async function deliverPreview(id,platform='x',position=0) {
+    if(!enabled(env))return {state:'disabled'};
+    if(!['x','instagram','tiktok'].includes(platform)||!Number.isInteger(position)||position<0||position>(platform==='x'?0:4))return {state:'invalid-selection'};
+    const kit=await social(id);
+    if(!kit)return {state:'approval-required'};
+    const key='social_delivery:v1:'+id+':'+platform+':'+position;
+    const prior=await db.first('SELECT value FROM runtime WHERE key=?',key);
+    if(prior)return {state:JSON.parse(prior.value).state==='sent'?'already-delivered':'delivery-needs-review'};
+    const result=await preview(id,platform==='x'?0:position+1,{reuseOnly:true,platform:platform==='x'?null:platform});
+    if(result.state!=='preview')return result;
+    const claimed=await db.run('INSERT OR IGNORE INTO runtime(key,value) VALUES(?,?)',key,JSON.stringify({state:'sending',at:now()}));
+    if(!claimed.meta?.changes)return {state:'delivery-needs-review'};
+    try {
+      const ref=id.slice(0,8), stamp=kit.source.publishedAt.slice(0,10);
+      const sent=await bot.imageDocument(result.png,'WaCapital-'+ref+'-'+platform+'-'+(position+1)+'-borrador.png',
+        '🧪 PRUEBA · '+platform.toUpperCase()+' · '+(position+1)+(platform==='x'?'':'/5')+' · '+ref+'\n'+kit.title+'\nFecha original: '+stamp+'. Diseño actualizado; requiere revisión.');
+      if(!sent?.document?.file_id)throw new ServiceError('telegram-image');
+      await db.set(key,{state:'sent',at:now(),fileId:sent.document.file_id});
+      if(platform==='x')await bot.send('🧪 PRUEBA DE FORMATO · '+ref+'\nNoticia del '+stamp+'; se reutiliza una ilustración guardada, no es una alerta nueva.\n\n'+kit.x.text+
+        '\n\nGuarda el PNG de esta misma referencia y adjúntalo en X. El botón solo precarga texto. Revisa el material antes de publicar.\nFuente: '+kit.source.url,
+        kit.x.composeUrl?{inline_keyboard:[[{text:'✍️ Revisar texto en X · adjuntar PNG',url:kit.x.composeUrl}]]}:undefined);
+      return {state:'delivered',platform,position,reference:ref};
+    } catch (error) {
+      const category=error instanceof ServiceError?error.service:'delivery';
+      const status=error instanceof ServiceError?error.status:0;
+      await db.set(key,{state:'uncertain',at:now(),category,status});
+      return {state:'delivery-needs-review',category,status};
+    }
+  }
+  return {enqueue, step, status, review, resend, retry, preview, prepareX, social, sendSocial, deliverPreview};
 }

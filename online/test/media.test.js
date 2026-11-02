@@ -5,7 +5,7 @@ import {createPipeline} from '../src/pipeline.js';
 import {xPublication, visualBrief, visualHtml, visualDimensions} from '../src/publication.js';
 import {minimalUpdate} from '../src/domain.js';
 import worker from '../src/worker.js';
-import {NOW, setup, callback} from './helpers.js';
+import {NOW, setup, callback, decodeUpload} from './helpers.js';
 
 const JPEG = '/9j/' + 'A'.repeat(160);
 const PNG = new Uint8Array([137,80,78,71,13,10,26,10,1,2,3]);
@@ -17,6 +17,7 @@ async function fixture() {
   await pipeline.handleUpdate(callback(story));
   const state = {generated: 0, rendered: [], documents: [], loseImage: false, instant: NOW};
   const fetcher = async (url, options) => {
+    options=await decodeUpload(options);
     if (url.endsWith('/sendDocument') && typeof options.body.get('document') !== 'string' && options.body.get('document').type === 'image/png') {
       state.documents.push(options.body.get('document'));
       if (state.loseImage) throw new Error('response lost');

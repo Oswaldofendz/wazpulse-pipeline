@@ -30,9 +30,19 @@ export function network(fetcher = fetch) {
   return {
     async json(url, options = {}, timeout = 20_000) {
       let response;
+      if(options.body instanceof FormData){
+        // Workers can stream FormData with no known length. Materialize this
+        // bounded upload so the origin receives a fixed-length request body.
+        const encoded=new Response(options.body);
+        const body=await encoded.arrayBuffer();
+        if(body.byteLength>2_100_000)throw new ServiceError('upload-size');
+        const headers=new Headers(options.headers);
+        headers.set('Content-Type',encoded.headers.get('Content-Type'));
+        options={...options,headers,body};
+      }
       try {
         response = await fetcher(url, {...options, redirect: 'manual', signal: AbortSignal.timeout(timeout)});
-      } catch { throw new ServiceError('network'); }
+      } catch (error) { throw new ServiceError(['TimeoutError','AbortError'].includes(error?.name)?'network-timeout':'network'); }
       if (!response.ok) throw new ServiceError('http', response.status);
       try { return JSON.parse(await readBounded(response)); }
       catch (error) {
@@ -70,7 +80,7 @@ export function telegram(env, net) {
       form.set('caption', caption.slice(0, 950));
       if (typeof image === 'string') form.set('document', image);
       else form.set('document', new Blob([image], {type: 'image/png'}), filename);
-      const data = await net.json(url('sendDocument'), {method: 'POST', body: form}, 15_000);
+      const data = await net.json(url('sendDocument'), {method: 'POST', body: form}, 45_000);
       if (!data.ok) throw new ServiceError('telegram', data.error_code || 0);
       return data.result;
     },
@@ -84,7 +94,7 @@ export function telegram(env, net) {
       form.set('chat_id', env.TELEGRAM_CHAT_ID);
       form.set('caption', 'WaCapital · Material aprobado. Revisa el archivo antes de publicar.');
       form.set('document', new Blob([text], {type: 'text/plain;charset=utf-8'}), filename);
-      const data = await net.json(url('sendDocument'), {method: 'POST', body: form}, 10_000);
+      const data = await net.json(url('sendDocument'), {method: 'POST', body: form}, 45_000);
       if (!data.ok) throw new ServiceError('telegram', data.error_code || 0);
       return data.result;
     }
