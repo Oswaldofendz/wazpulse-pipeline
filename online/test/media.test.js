@@ -30,14 +30,16 @@ async function fixture() {
   return {...s, pipeline, story: {...story, editorial: story.editorial}, media, mediaState: state};
 }
 
-test('X weighted length retains source and disclaimer with emoji, CJK and long links', async () => {
+test('X uses complete approved headlines instead of cropping emoji, CJK or long copy', async () => {
   const s = await fixture();
   const row = s.db.native.prepare('SELECT * FROM stories').get();
   for (const tweet of ['🚀'.repeat(400), '東京'.repeat(300), 'Noticia '.repeat(100), '👨‍👩‍👧‍👦 '.repeat(100)]) {
     const e = JSON.parse(row.editorial); e.tweet = tweet;
     const result = xPublication({...row, editorial: e});
     assert.ok(result.weightedLength <= 280);
-    assert.ok(result.text.includes(row.source_url));
+    assert.equal(result.text.includes(row.source_url), false);
+    assert.equal(result.sourceUrl, row.source_url);
+    assert.ok(result.text.includes(e.headline));
     assert.ok(result.text.endsWith('Información, no asesoramiento.'));
     if (result.composeUrl) assert.equal(new URL(result.composeUrl).searchParams.get('text'), result.text);
     else assert.ok(('https://twitter.com/intent/tweet?text=' + encodeURIComponent(result.text)).length > 2000);
@@ -156,7 +158,7 @@ test('concurrent visual workers share a lock and cannot duplicate AI requests', 
 
 test('private images, manifests and visual commands require admin authentication', async () => {
   const s = await fixture();
-  for (const path of ['/admin/media-status', '/admin/media-step', '/admin/media/' + s.story.id + '/0', '/admin/media/' + s.story.id + '/manifest']) {
+  for (const path of ['/admin/media-status', '/admin/media-step', '/admin/media/' + s.story.id + '/0', '/admin/media/' + s.story.id + '/manifest', '/admin/media/' + s.story.id + '/x-package']) {
     assert.equal((await worker.fetch(new Request('https://test' + path), s.env, {})).status, 401);
   }
 });
@@ -183,12 +185,58 @@ test('Free browser cooldown prevents two launches within twenty-five seconds', a
   assert.equal((await media.step()).state, 'browser-cooldown');
 });
 
-test('overlong compose links fall back to copyable text without losing source attribution', async () => {
+test('source URL length cannot consume the X text budget or create a publisher image card', async () => {
   const s = await fixture(), story = s.db.native.prepare('SELECT * FROM stories').get();
   const result = xPublication({...story, source_url: story.source_url + '?q=' + 'a'.repeat(2100)});
-  assert.equal(result.composeUrl, null);
+  assert.ok(result.composeUrl);
   assert.ok(result.weightedLength <= 280);
-  assert.ok(result.text.includes('?q='));
+  assert.equal(result.text.includes('?q='), false);
+  assert.ok(result.sourceUrl.includes('?q='));
+});
+
+test('X package pairs the selected story with its exact approved cover and refreshes legacy text', async () => {
+  const s = await fixture();
+  for (let n = 0; n < 8; n++) await s.media.step();
+  const job = s.db.native.prepare('SELECT * FROM visual_jobs').get();
+  const manifest = JSON.parse(job.manifest);
+  manifest.x = {text:'Cortado a mitad de los...',composeUrl:'https://twitter.com/intent/tweet?text=old'};
+  s.db.native.prepare('UPDATE visual_jobs SET manifest=?').run(JSON.stringify(manifest));
+  assert.equal(await s.media.prepareX(s.story.id), false);
+  await s.media.review(s.story.id, Number(job.review_message), true);
+  const send = s.state.calls.filter(x => x.url.endsWith('/sendDocument') && x.options.body.get('document') === 'file-1').at(-1);
+  assert.ok(send);
+  assert.ok(send.options.body.get('caption').includes(s.story.id.slice(0,8)));
+  const message=s.state.messages.at(-1);
+  const link=message.reply_markup.inline_keyboard[0][0].url;
+  const text=new URL(link).searchParams.get('text');
+  assert.ok(!text.includes('Cortado'));
+  assert.ok(!text.includes('http'));
+  assert.ok(message.text.includes(s.story.source_url));
+  assert.ok(message.text.includes('solo texto'));
+  assert.equal(s.mediaState.generated,1);
+  assert.equal(s.db.native.prepare('SELECT manifest FROM visual_jobs').get().manifest,JSON.stringify(manifest));
+  assert.equal(await s.media.prepareX('f'.repeat(32)), false);
+  const before=s.state.messages.length;
+  s.db.native.prepare("UPDATE visual_assets SET delivery='uncertain' WHERE position=0").run();
+  assert.equal(await s.media.prepareX(s.story.id),false);
+  assert.equal(s.state.messages.length,before);
+});
+
+test('caption-only preview corrections reuse the image at the cap without changing approval', async()=>{
+  const s=await fixture();
+  await s.media.preview(s.story.id,0);
+  const generated=s.mediaState.generated;
+  const editorial=JSON.parse(s.story.editorial);
+  editorial.headline='Un anuncio de prueba que merece contexto';
+  editorial.hook='Un anuncio de prueba que merece contexto';
+  editorial.angle='Comprueba la fecha y las condiciones del comunicado.';
+  s.db.native.prepare('UPDATE stories SET editorial=? WHERE id=?').run(JSON.stringify(editorial),s.story.id);
+  s.env.DAILY_VISUAL_LIMIT='0';
+  const result=await s.media.preview(s.story.id,0);
+  assert.equal(result.state,'preview');
+  assert.equal(s.mediaState.generated,generated);
+  assert.ok(s.mediaState.rendered.at(-1).html.includes(editorial.angle));
+  assert.equal(s.db.native.prepare('SELECT state FROM visual_jobs').get().state,'queued');
 });
 
 test('a replayed approval recovers a missing visual job without duplicating the text package', async () => {

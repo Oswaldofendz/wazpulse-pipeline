@@ -62,11 +62,12 @@ export default {
           if (result.state !== 'preview') return json({state: result.state}, 409);
           return new Response(result.png, {headers: {'Content-Type': 'image/png', 'Cache-Control': 'private, no-store'}});
         }
-        const mediaPath = path.match(/^\/admin\/media\/([a-f0-9]{32})(?:\/(enqueue|manifest|retry|[0-5]))?$/);
+        const mediaPath = path.match(/^\/admin\/media\/([a-f0-9]{32})(?:\/(enqueue|manifest|retry|x-package|[0-5]))?$/);
         if (mediaPath) {
           const [, id, action] = mediaPath, db = store(env.DB);
           if (action === 'enqueue' && request.method === 'POST') return json({queued: await createMedia(env).enqueue(id)});
           if (action === 'retry' && request.method === 'POST') return json({resumed: await createMedia(env).retry(id)});
+          if (action === 'x-package' && request.method === 'POST') return json({prepared: await createMedia(env).prepareX(id)});
           if (!action && request.method === 'GET') return json(await createMedia(env).status(id));
           if (action === 'manifest' && request.method === 'GET') {
             const row = await db.first('SELECT manifest FROM visual_jobs WHERE story_id=?', id);

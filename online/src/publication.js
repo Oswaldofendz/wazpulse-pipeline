@@ -2,26 +2,50 @@ import twitterText from 'twitter-text';
 import {artDirection} from './art-direction.js';
 
 const compact = value => String(value || '').replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim();
-const graphemes = new Intl.Segmenter('es', {granularity: 'grapheme'});
+const sentences = new Intl.Segmenter('es', {granularity: 'sentence'});
+const withoutLinks = value => compact(value).replace(/https?:\/\/\S+/gi, '').trim();
+const complete = value => Boolean(value) && !/(?:\.{3}|…|[,;:]|\b(?:de|del|los|las|el|la|y|o|por|para|con|sin|que|si))\s*$/iu.test(value);
+const sentenceParts = value => [...sentences.segment(withoutLinks(value))].map(x => x.segment.trim()).filter(complete);
+const terms = value => new Set(compact(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().match(/[a-z0-9]+/g)?.filter(x => x.length > 2 && !['para','tras','por','con','una','del','los','las','que','sus','como','ante','desde','este','esta','unos','unas'].includes(x)) || []);
+const similar = (a,b) => {
+  const left = terms(a), right = terms(b);
+  if (!left.size || !right.size) return false;
+  return [...left].filter(x => right.has(x)).length / Math.min(left.size,right.size) >= .65;
+};
 
-// X weights links and emoji differently from JS string.length. Always retain
-// the complete source URL and disclaimer, then shorten only the editorial copy.
+export function coverSubtitle(editorial) {
+  const title = compact(editorial.headline), hook = compact(editorial.hook);
+  if (complete(hook) && !similar(title, hook)) return hook;
+  // Reuse approved complementary context; never invent a second claim or repeat the headline.
+  return [...sentenceParts(editorial.angle), ...sentenceParts(editorial.reasoning)]
+    .find(value => value.length <= 190 && !similar(title,value)) || '';
+}
+
+// A Web Intent only carries text. Omit source links here to avoid a publisher's
+// unrelated card image. Attribution stays in the private pack and the PNG.
+// Keep complete units of approved copy; never truncate words or append ellipses.
 export function xPublication(story) {
   const e = typeof story.editorial === 'string' ? JSON.parse(story.editorial) : story.editorial;
-  const suffix = '\n\nFuente: ' + story.source_url + '\nInformación, no asesoramiento.';
-  let copy = compact(e.tweet || e.headline);
-  // The source has its own dedicated position; remove model-supplied links.
-  copy = copy.replace(/https?:\/\/\S+/gi, '').trim();
-  if (!twitterText.parseTweet(copy + suffix).valid) {
-    const available = 280 - twitterText.parseTweet(suffix).weightedLength - 2;
-    const prefix = twitterText.parseTweet(copy, {...twitterText.configs.defaults, maxWeightedTweetLength: available});
-    copy = [...graphemes.segment(copy)].filter(x => x.index + x.segment.length <= prefix.validRangeEnd + 1).map(x => x.segment).join('').trimEnd() + '…';
+  const suffix = '\n\nInformación, no asesoramiento.';
+  const tweet = withoutLinks(e.tweet), headline = withoutLinks(e.headline);
+  const fits = value => complete(value) && twitterText.parseTweet(value + suffix).valid;
+  let copy = fits(tweet) ? tweet : '', strategy = 'full';
+  if (!copy) {
+    strategy = 'complete-sentences';
+    // Prefer a complete subject-bearing headline to an isolated clickbait opening.
+    copy = fits(headline) ? headline : sentenceParts(tweet).find(fits) || '';
+    if (copy) for (const part of sentenceParts(tweet)) {
+      if (!similar(copy,part) && fits(copy + ' ' + part)) copy += ' ' + part;
+    }
   }
+  if (!copy) return {text: tweet || headline, weightedLength: twitterText.parseTweet(tweet || headline).weightedLength,
+    composeUrl: null, ready: false, strategy: 'needs-edit', sourceUrl: story.source_url};
   const text = copy + suffix;
   const result = twitterText.parseTweet(text);
-  if (!result.valid || !copy || result.weightedLength > 280) throw new Error('Invalid X publication');
+  if (!result.valid || result.weightedLength > 280) throw new Error('Invalid X publication');
   const composeUrl = 'https://twitter.com/intent/tweet?text=' + encodeURIComponent(text);
-  return {text, weightedLength: result.weightedLength, composeUrl: composeUrl.length <= 2000 ? composeUrl : null};
+  return {text, weightedLength: result.weightedLength, composeUrl: composeUrl.length <= 2000 ? composeUrl : null,
+    ready: true, strategy, sourceUrl: story.source_url};
 }
 
 export function visualBrief(story, {recent = []} = {}) {
@@ -44,8 +68,9 @@ export function visualBrief(story, {recent = []} = {}) {
   const paragraphs = compact(e.reasoning).match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [compact(e.reasoning)];
   const context = paragraphs.slice(0, 2).join(' ').trim();
   const watch = paragraphs.slice(2).join(' ').trim();
+  const subtitle = coverSubtitle(e);
   const slides = [
-    {eyebrow: 'LA NOTICIA', title: compact(e.headline), body: compact(e.hook)},
+    {eyebrow: 'LA NOTICIA', title: compact(e.headline), body: subtitle},
     {eyebrow: '01 · EN CONTEXTO', title: '¿Qué se está contando?', body: compact(e.instagram || e.headline)},
     {eyebrow: '02 · POR QUÉ IMPORTA', title: 'La lectura del mercado', body: compact(e.angle)},
     {eyebrow: '03 · QUÉ COMPROBAR', title: 'Antes de sacar conclusiones', body: watch || context},
@@ -53,7 +78,7 @@ export function visualBrief(story, {recent = []} = {}) {
       body: 'Consulta la publicación de ' + compact(story.source) + ' y verifica las cifras, la fecha y las actualizaciones. Esta pieza interpreta un titular y su extracto; no sustituye la noticia completa.'}
   ];
   return {version: 3, style: 'impact-v3', art, model: '@cf/black-forest-labs/flux-1-schnell', steps: 4,
-    prompt: prompt.slice(0, 2048), title: compact(e.headline), hook: compact(e.hook), slides,
+    prompt: prompt.slice(0, 2048), title: compact(e.headline), hook: subtitle, slides,
     source: compact(story.source), sourceHost: new URL(story.source_url).hostname.replace(/^www\./, ''),
     date: new Date(story.published_at).toLocaleDateString('es-ES', {timeZone: 'UTC', day: '2-digit', month: 'short', year: 'numeric'}),
     sourceUrl: story.source_url, x: xPublication(story)};

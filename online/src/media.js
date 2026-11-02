@@ -1,6 +1,6 @@
 import {store} from './store.js';
 import {network, telegram, ServiceError} from './io.js';
-import {visualBrief, visualHtml, visualDimensions} from './publication.js';
+import {visualBrief, visualHtml, visualDimensions, xPublication} from './publication.js';
 import {createStorage} from './storage.js';
 
 const limit = value => /^([0-6])$/.test(String(value)) ? Number(value) : 3;
@@ -135,7 +135,7 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
       // A lost response here must not create duplicate approval messages.
       await db.run("UPDATE visual_jobs SET state='review',error='review-sending' WHERE story_id=? AND state='rendering'", story.id);
       const result = await bot.send('✅ Material visual preparado\n\n' + brief.x.text +
-        '\n\nX: ' + brief.x.weightedLength + '/280 caracteres ponderados.\nPortada y 5 láminas enviadas como PNG originales. Revisa imagen, nombres, cifras y fuente.\n\nAprobar aquí confirma esta versión; no publica en redes.',
+        '\n\nX: ' + (brief.x.ready === false ? 'el texto completo necesita edición.' : brief.x.weightedLength + '/280 caracteres ponderados.') + '\nPortada y 5 láminas enviadas como PNG originales. Revisa imagen, nombres, cifras y fuente.\n\nAprobar aquí confirma esta versión; no publica en redes.',
       {inline_keyboard: [[{text: '✅ Aprobar versión final', callback_data: 'visualok:' + story.id},
         {text: '❌ Descartar imágenes', callback_data: 'visualno:' + story.id}]]});
       if (!Number.isSafeInteger(result?.message_id)) throw new ServiceError('telegram-review');
@@ -168,10 +168,27 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
     const row = await db.first("UPDATE visual_jobs SET state=?,approved_at=? WHERE story_id=? AND state='review' AND review_message=? RETURNING *", approved ? 'approved' : 'rejected', approved ? now() : null, id, String(messageId));
     if (!row) return false;
     if (approved) {
-      const brief = JSON.parse(row.manifest);
-      await bot.send('📦 Versión final aprobada\n\n' + brief.x.text + '\n\nGuarda la portada PNG y adjúntala en X. El botón abre el texto; tú confirmas la publicación.',
-        brief.x.composeUrl ? {inline_keyboard: [[{text: '✍️ Abrir borrador en X', url: brief.x.composeUrl}]]} : undefined);
+      await prepareX(id);
     } else await bot.send('Imágenes descartadas. No se ha publicado nada.');
+    return true;
+  }
+
+  async function prepareX(id) {
+    const job = await getJob(id);
+    if (job?.state !== 'approved') return false;
+    const story = await db.first("SELECT * FROM stories WHERE id=? AND state='approved'", id);
+    const cover = await db.first("SELECT * FROM visual_assets WHERE story_id=? AND position=0 AND delivery='sent' AND length(file_id)>0", id);
+    if (!story || !cover) return false;
+    const x = xPublication(story), brief = JSON.parse(job.manifest), ref = id.slice(0,8);
+    // Re-send the exact approved cover by file_id, never another story's latest
+    // file or the source website's preview. This does not generate another image.
+    await bot.imageDocument(cover.file_id, cover.filename,
+      '🖼 PORTADA PARA ESTE BORRADOR · ' + ref + '\n' + brief.title + '\nGuarda este PNG y adjúntalo en X.');
+    await bot.send('📦 Borrador X · ' + ref + '\n\n' + x.text +
+      '\n\n' + (x.ready ? 'Texto completo: ' + x.weightedLength + '/280 caracteres ponderados.' : 'Este texto necesita edición antes de abrir X; no se ha cortado.') +
+      '\n1. Guarda la portada PNG anterior, referencia ' + ref + '.\n2. Abre el borrador y adjunta ese archivo con el botón de fotos de X.\n3. Revisa texto e imagen antes de publicar.\nEl botón precarga solo texto; no adjunta imágenes ni publica.' +
+      '\n\nFuente conservada para revisión: ' + story.source_url + '\nRecuperar este conjunto: /publicar ' + id,
+      x.composeUrl ? {inline_keyboard: [[{text: '✍️ Abrir X · adjuntar la portada anterior', url: x.composeUrl}]]} : undefined);
     return true;
   }
 
@@ -225,12 +242,16 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
         await db.set(key, saved);
         await storage.rememberPreview(key);
       }
-      else await storage.rememberPreview(key);
+      else {
+        await storage.rememberPreview(key);
+        // Typography-only corrections reuse the illustration, even at the daily cap.
+        saved = {...saved, brief: previewBrief};
+      }
       await db.set('visual_last_browser', instant);
       const png = new Uint8Array(await renderImage(visualHtml(saved.brief, saved.image, position - 1), visualDimensions(saved.brief, position)));
       if (png.length < 8 || png.length > 1_900_000 || ![137,80,78,71,13,10,26,10].every((n,i) => png[i] === n)) throw new ServiceError('png-size-or-format');
       return {state: 'preview', png};
     } finally { await db.unlock('visual', owner); }
   }
-  return {enqueue, step, status, review, resend, retry, preview};
+  return {enqueue, step, status, review, resend, retry, preview, prepareX};
 }

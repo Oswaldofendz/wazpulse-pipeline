@@ -72,7 +72,8 @@ export function setup(overrides = {}) {
     if (url.endsWith('/getMe')) return Response.json({ok: true, result: {username: 'fixture_bot'}});
     if (url.endsWith('/setWebhook')) return Response.json({ok: true, result: true});
     if (url.endsWith('/sendDocument')) {
-      state.documents.push(await options.body.get('document').text());
+      const document = options.body.get('document');
+      state.documents.push(typeof document === 'string' ? document : await document.text());
       if (state.failTelegram) throw new Error('response lost after sending');
       return Response.json({ok: true, result: {message_id: 999}});
     }

@@ -17,7 +17,7 @@ try {
     console.log(JSON.stringify(await response.json(), null, 2));
   } else {
     if (!/^[a-f0-9]{32}$/.test(id || '')) throw new Error('Invalid story ID');
-    if (command === 'enqueue' || command === 'retry') console.log(JSON.stringify(await (await request('/admin/media/' + id + '/' + command, 'POST')).json()));
+    if (['enqueue', 'retry', 'x-package'].includes(command)) console.log(JSON.stringify(await (await request('/admin/media/' + id + '/' + command, 'POST')).json()));
     else if (command === 'preview') {
       if (!output || !/^[0-5]$/.test(selection || '0')) throw new Error('Output and position required');
       const directory = resolve(output);

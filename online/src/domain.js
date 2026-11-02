@@ -106,7 +106,8 @@ export function makePack(story) {
     'Proveedor editorial: ' + e.provider + ' · Relevancia editorial: ' + e.strength + '/5',
     '',
     '## X · Borrador', x.text,
-    'Caracteres ponderados: ' + x.weightedLength + '/280. Comprobado con twitter-text.',
+    x.ready ? 'Caracteres ponderados: ' + x.weightedLength + '/280. Comprobado con twitter-text.' :
+      'El texto completo necesita edición para X. No se recortó ni se habilitó un botón de publicación.',
     x.composeUrl ? 'Abrir el borrador (adjuntar la imagen y confirmar manualmente): ' + x.composeUrl : 'Copia el texto en X, adjunta la imagen y confirma manualmente.',
     '',
     '## Instagram · Caption', e.instagram || e.hook,
