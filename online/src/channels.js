@@ -4,6 +4,7 @@ import {visualBrief, visualHtml, visualDimensions, xPublication} from './publica
 import {socialKit, socialHtml, socialDimensions} from './social.js';
 import {createImages} from './image-providers.js';
 import {createStorage} from './storage.js';
+import {shareXUrl,xButtons} from './share-x.js';
 
 const platforms={x:'Twitter/X',i:'Instagram',t:'TikTok'};
 const names={x:'x',i:'instagram',t:'tiktok'};
@@ -49,6 +50,17 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
       {inline_keyboard:[[{text:'Aprobar versión final',callback_data:'ok'+codes[job.platform]+':'+job.story_id},{text:'Descartar',callback_data:'cancel'+codes[job.platform]+':'+job.story_id}]]});
     if(success)await db.run("UPDATE channel_jobs SET error=NULL WHERE story_id=? AND platform=? AND state='review'",job.story_id,job.platform);
   }
+  async function refreshX(id) {
+    const job=await getJob(id,'x');
+    if(job?.state!=='approved'||job.delivery!=='sent')return false;
+    const story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",id);
+    const cover=await db.first("SELECT file_id,filename FROM channel_assets WHERE story_id=? AND platform='x' AND position=0 AND length(file_id)>0",id);
+    if(!story||!cover)return false;
+    const x=xPublication(story),shareUrl=await shareXUrl(env,story,cover,'c',now());
+    return edit(job,'✅ Twitter/X · Material aprobado\n\n'+x.text+'\n\n'+x.weightedLength+'/280 · '+
+      (shareUrl?'Comparte texto y portada desde el móvil; revisa que X reciba ambos.':'Adjunta la portada recibida al abrir X.')+
+      '\n\nFuente: '+story.source_url+'\nNo se ha publicado en redes.',xButtons(x,shareUrl));
+  }
   async function pick(id,code,messageId) {
     const platform=names[code];
     if(!platform)return false;
@@ -84,9 +96,8 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
       await edit(job,'⏳ Preparando '+platforms[code]+'\n\n'+JSON.parse(story.editorial).headline+'\n\nRecibirás '+(platform==='x'?'una portada.':'las cinco láminas en un solo grupo.')+' No publica en redes.');
     } else if(verb==='ok'&&['review','approved'].includes(job.state)&&job.delivery==='sent') {
       await db.run("UPDATE channel_jobs SET state='approved',approved_at=? WHERE story_id=? AND platform=? AND state='review'",now(),id,platform);
-      const x=xPublication(story);
-      await edit(job,'✅ '+platforms[code]+' · Material aprobado\n\n'+(platform==='x'?x.text+'\n\n'+x.weightedLength+'/280 · Adjunta la portada recibida al abrir X.':socialKit(story)[platform].caption)+'\n\nFuente: '+story.source_url+'\nNo se ha publicado en redes.',
-        platform==='x'&&x.composeUrl?{inline_keyboard:[[{text:'Abrir X · adjuntar portada',url:x.composeUrl}]]}:undefined);
+      if(platform==='x')await refreshX(id);
+      else await edit(job,'✅ '+platforms[code]+' · Material aprobado\n\n'+socialKit(story)[platform].caption+'\n\nFuente: '+story.source_url+'\nNo se ha publicado en redes.');
     } else if(verb==='cancel'&&['draft','review'].includes(job.state)) {
       await db.run("UPDATE channel_jobs SET state='rejected' WHERE story_id=? AND platform=?",id,platform);
       await edit(job,'Formato descartado · '+platforms[code]+'.');
@@ -193,5 +204,5 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
       return {state:'blocked'};
     }finally{await db.unlock('visual',owner);}
   }
-  return {pick,action,step};
+  return {pick,action,step,refreshX};
 }

@@ -55,10 +55,10 @@ export function network(fetcher = fetch) {
 
 export function telegram(env, net) {
   const url = method => 'https://api.telegram.org/bot' + env.TELEGRAM_BOT_TOKEN + '/' + method;
-  async function call(method, body) {
+  async function call(method, body, timeout = 8000) {
     const data = await net.json(url(method), {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
-    }, 8000);
+    }, timeout);
     if(!data.ok && method==='editMessageText' && data.error_code===400 && /message is not modified/i.test(data.description||''))return {message_id:body.message_id};
     if (!data.ok) throw new ServiceError('telegram', data.error_code || 0);
     return data.result;
@@ -100,7 +100,7 @@ export function telegram(env, net) {
       return data.result;
     },
     async download(fileId) {
-      const info = await call('getFile', {file_id: fileId});
+      const info = await call('getFile', {file_id: fileId},25_000);
       if (typeof info.file_path !== 'string' || !/^[A-Za-z0-9_./-]+$/.test(info.file_path) || info.file_path.includes('..')) throw new ServiceError('telegram-file');
       return 'https://api.telegram.org/file/bot' + env.TELEGRAM_BOT_TOKEN + '/' + info.file_path;
     },

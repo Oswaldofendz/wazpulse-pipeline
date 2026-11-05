@@ -1,5 +1,9 @@
 # WaCapital online · primera versión
 
+**Compartir desde el móvil:** [texto y portada juntos mediante el menú del sistema](../docs/COMPARTIR-X-2026-11-05.md).
+El nuevo botón aparece al aprobar X y mantiene las opciones manuales. Necesita
+verificación en el teléfono real; no publica ni utiliza la API de pago de X.
+
 **Actualización 05/11/2026:** [revisión móvil por red y respaldo de imágenes](../docs/TELEGRAM-MOVIL-2026-11-05.md).
 La notificación inicial es breve. Elegir Twitter/X, TikTok o Instagram muestra
 solo su borrador; un segundo botón prepara una portada X o cinco láminas de la

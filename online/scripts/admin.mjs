@@ -8,6 +8,7 @@ const routes = {
   'media-status': ['/admin/media-status', 'GET'],
   'media-step': ['/admin/media-step', 'POST'],
   'channel-status': ['/admin/channel-status', 'GET'],
+  'share-x-status': ['/admin/share-x-status', 'GET'],
   'channel-step': ['/admin/channel-step', 'POST'],
   'storage-status': ['/admin/storage-status', 'GET'],
   'storage-plan': ['/admin/storage-plan', 'GET'],

@@ -5,6 +5,7 @@ import {createPipeline} from './pipeline.js';
 import {createMedia} from './media.js';
 import {createStorage} from './storage.js';
 import {createChannels} from './channels.js';
+import {shareXRequest} from './share-x.js';
 
 const json = (data, status = 200) => Response.json(data, {status, headers: {'Cache-Control': 'no-store'}});
 const active = env => env.PIPELINE_ENABLED === 'true';
@@ -20,8 +21,9 @@ async function secretMatches(actual, expected) {
 export default {
   async fetch(request, env, ctx) {
     const path = new URL(request.url).pathname;
+    if(path==='/share/x'||path.startsWith('/share/x/'))return shareXRequest(request,env);
     if (path === '/health' && request.method === 'GET') {
-      return json({service: 'wacapital-online', version: '0.3.0', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
+      return json({service: 'wacapital-online', version: '0.3.1', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
     }
     if (path === '/telegram/webhook' && request.method === 'POST') {
       if (!await secretMatches(request.headers.get('X-Telegram-Bot-Api-Secret-Token'), env.TELEGRAM_WEBHOOK_SECRET)) return json({error: 'Unauthorized'}, 401);
@@ -45,6 +47,10 @@ export default {
       try {
         const pipeline = createPipeline(env);
         if (path === '/admin/status' && request.method === 'GET') return json(await pipeline.status());
+        if(path==='/admin/share-x-status'&&request.method==='GET') {
+          const row=await store(env.DB).first("SELECT value FROM runtime WHERE key='share_x_last_error'");
+          return json({lastError:row?JSON.parse(row.value):null});
+        }
         if (path === '/admin/tick' && request.method === 'POST') return json(await pipeline.tick());
         if (path === '/admin/media-step' && request.method === 'POST') return json(await createMedia(env).step());
         if (path === '/admin/channel-step' && request.method === 'POST') return json(await createChannels(env).step());

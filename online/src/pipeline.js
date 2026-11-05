@@ -116,7 +116,8 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
     } else if (/^\/reenviar [a-f0-9]{32}$/.test(command || '')) {
       if (!await media.resend(command.split(' ')[1])) await bot.send('No hay imágenes disponibles para reenviar.');
     } else if (/^\/publicar [a-f0-9]{32}$/.test(command || '')) {
-      if (!await media.prepareX(command.split(' ')[1])) await bot.send('Primero aprueba la versión visual y confirma la entrega de su portada. No se ha publicado nada.');
+      const id=command.split(' ')[1];
+      if (!await channels.refreshX(id) && !await media.prepareX(id)) await bot.send('Primero aprueba la versión visual y confirma la entrega de su portada. No se ha publicado nada.');
     } else if (/^\/redes [a-f0-9]{32}$/.test(command || '')) {
       if(!await media.sendSocial(command.split(' ')[1]))await bot.send('Elige una noticia cuyo texto ya hayas aprobado. No se ha publicado nada.');
     }

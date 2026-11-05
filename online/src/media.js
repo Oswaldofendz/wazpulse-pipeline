@@ -4,6 +4,7 @@ import {visualBrief, visualHtml, visualDimensions, xPublication} from './publica
 import {createStorage} from './storage.js';
 import {socialKit, socialText, socialHtml, socialDimensions} from './social.js';
 import {trump} from './portraits.js';
+import {shareXUrl,xButtons} from './share-x.js';
 
 const limit = value => /^([0-6])$/.test(String(value)) ? Number(value) : 3;
 const enabled = env => env.PIPELINE_ENABLED === 'true' && env.MEDIA_ENABLED === 'true';
@@ -183,15 +184,16 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
     const cover = await db.first("SELECT * FROM visual_assets WHERE story_id=? AND position=0 AND delivery='sent' AND length(file_id)>0", id);
     if (!story || !cover) return false;
     const x = xPublication(story), brief = JSON.parse(job.manifest), ref = id.slice(0,8);
+    const shareUrl=await shareXUrl(env,story,cover,'l',now());
     // Re-send the exact approved cover by file_id, never another story's latest
     // file or the source website's preview. This does not generate another image.
     await bot.imageDocument(cover.file_id, cover.filename,
       '🖼 PORTADA PARA ESTE BORRADOR · ' + ref + '\n' + brief.title + '\nGuarda este PNG y adjúntalo en X.');
     await bot.send('📦 Borrador X · ' + ref + '\n\n' + x.text +
       '\n\n' + (x.ready ? 'Texto completo: ' + x.weightedLength + '/280 caracteres ponderados.' : 'Este texto necesita edición antes de abrir X; no se ha cortado.') +
-      '\n1. Guarda la portada PNG anterior, referencia ' + ref + '.\n2. Abre el borrador y adjunta ese archivo con el botón de fotos de X.\n3. Revisa texto e imagen antes de publicar.\nEl botón precarga solo texto; no adjunta imágenes ni publica.' +
+      (shareUrl?'\nComparte texto y portada desde el móvil. Elige X y comprueba que recibió ambos antes de publicar. La opción de solo texto requiere adjuntar el PNG manualmente.':'\n1. Guarda la portada PNG anterior, referencia ' + ref + '.\n2. Abre el borrador y adjunta ese archivo con el botón de fotos de X.\n3. Revisa texto e imagen antes de publicar.\nEl botón precarga solo texto; no adjunta imágenes ni publica.') +
       '\n\nFuente conservada para revisión: ' + story.source_url + '\nRecuperar este conjunto: /publicar ' + id,
-      x.composeUrl ? {inline_keyboard: [[{text: '✍️ Abrir X · adjuntar la portada anterior', url: x.composeUrl}]]} : undefined);
+      xButtons(x,shareUrl));
     return true;
   }
 
