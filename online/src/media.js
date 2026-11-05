@@ -5,6 +5,7 @@ import {createStorage} from './storage.js';
 import {socialKit, socialText, socialHtml, socialDimensions} from './social.js';
 import {trump} from './portraits.js';
 import {shareXUrl,xButtons} from './share-x.js';
+import {CHART_PIXEL} from './market-graph.js';
 
 const limit = value => /^([0-6])$/.test(String(value)) ? Number(value) : 3;
 const enabled = env => env.PIPELINE_ENABLED === 'true' && env.MEDIA_ENABLED === 'true';
@@ -27,6 +28,7 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
   }
 
   async function generateImage(brief) {
+    if(brief.art?.mediaKind==='market-chart')return CHART_PIXEL;
     if(brief.art?.mediaKind==='official-portraits')return trump;
     if (generate) return generate(brief);
     if (!env.AI) throw new ServiceError('ai-binding');
@@ -248,7 +250,7 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
       if (!saved) {
         if (!await storage.allow()) return {state: 'storage-paused'};
         const day = new Date(instant).toISOString().slice(0, 10);
-        if(previewBrief.art?.mediaKind!=='official-portraits') {
+        if(!['official-portraits','market-chart'].includes(previewBrief.art?.mediaKind)) {
         await db.run('INSERT OR IGNORE INTO visual_budget(day,used) VALUES(?,0)', day);
         if (!await db.first('UPDATE visual_budget SET used=used+1 WHERE day=? AND used<? RETURNING used', day, limit(env.DAILY_VISUAL_LIMIT))) return {state: 'daily-limit'};
         }

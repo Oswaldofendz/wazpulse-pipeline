@@ -18,7 +18,11 @@
     "DAILY_HORDE_LIMIT": "2",
     "DAILY_LLM_LIMIT": "6",
     "MIN_PRIORITY": "65",
-    "MIN_STRENGTH": "4"
+    "MIN_STRENGTH": "4",
+    "FAST_ENABLED": "false",
+    "FAST_ALERTS_ENABLED": "false",
+    "DAILY_FAST_LIMIT": "12",
+    "FAST_REQUEST_LIMIT": "12000"
   }
   // Before deployment, add a real D1 binding named DB using the ID returned
   // by Cloudflare. No account/database identifier is fabricated here.

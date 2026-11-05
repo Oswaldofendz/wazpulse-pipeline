@@ -3,6 +3,9 @@ export function store(db) {
   const first = (sql, ...args) => statement(sql, args).first();
   const run = (sql, ...args) => statement(sql, args).run();
   const all = async (sql, ...args) => (await statement(sql, args).all()).results;
+  const insertStatement=(story,now)=>statement(
+    'INSERT OR IGNORE INTO stories(id,event_key,title,source,source_url,published_at,priority,snippet,assets,created_at) SELECT ?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM stories WHERE source_url=?)',
+    [story.id,story.eventKey,story.title,story.source,story.url,story.published,story.priority,story.snippet,JSON.stringify(story.assets),now,story.url]);
   return {
     first, run, all,
     async lock(name, owner, now, ttl) {
@@ -17,10 +20,12 @@ export function store(db) {
       return Boolean(await first('UPDATE daily_budget SET used=used+1 WHERE day=? AND used<? RETURNING used', day, limit));
     },
     async insert(story, now) {
-      return run(
-        'INSERT OR IGNORE INTO stories(id,event_key,title,source,source_url,published_at,priority,snippet,assets,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
-        story.id, story.eventKey, story.title, story.source, story.url, story.published,
-        story.priority, story.snippet, JSON.stringify(story.assets), now);
+      return insertStatement(story,now).run();
+    },
+    async insertMany(stories,now) {
+      if(!stories.length)return 0;
+      const results=await db.batch(stories.map(story=>insertStatement(story,now)));
+      return results.reduce((n,r)=>n+(r.meta?.changes||0),0);
     },
     next: (now, cutoff) => first(
       "SELECT * FROM stories WHERE (state='new' OR (state='processing' AND lease_until<=?)) AND retry_at<=? AND published_at>=? AND attempts<3 ORDER BY priority DESC,published_at DESC LIMIT 1",

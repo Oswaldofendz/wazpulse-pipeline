@@ -1,6 +1,7 @@
 import {coverSubtitle, xPublication, escapeHtml} from './publication.js';
 import {artDirection} from './art-direction.js';
 import {composePortraits,portraitCredits} from './portraits.js';
+import {marketGraph} from './market-graph.js';
 
 const clean = value => String(value || '').replace(/[\u0000-\u001f]/g,' ').replace(/\s+/g,' ').trim();
 const segmenter = new Intl.Segmenter('es',{granularity:'sentence'});
@@ -30,7 +31,7 @@ export function socialKit(story) {
   return {version:1,state:'draft',requiresReview:true,storyId:story.id,
     audience:'Hispanohablantes de ambos lados del Atlántico',
     source:{name:story.source,url:story.source_url,publishedAt:new Date(story.published_at).toISOString(),basis:'Titular/extracto y redacción previamente aprobada; no verificación del artículo completo.'},
-    title,x:xPublication(story),...(artDirection(story).faceoff?{mediaCredits:portraitCredits}:{}),
+    title,x:xPublication(story),...(e.marketSnapshot?{marketSnapshot:e.marketSnapshot}:{}),...(artDirection(story).faceoff?{mediaCredits:portraitCredits}:{}),
     hooks:[{type:'directo',text:title},{type:'contexto',text:'El contexto de este anuncio: '+title},{type:'pregunta',text:'¿Qué cambia con este anuncio? '+title}],
     slides,instagram:{width:1080,height:1350,caption:[title,context,'¿Qué dato te falta para entender mejor esta noticia?','Fuente: '+story.source_url].join('\n\n')},
     tiktok:{width:1080,height:1920,caption:[title,'Qué pasó y qué falta por confirmar.','Fuente: '+story.source_url].join('\n\n')},
@@ -59,6 +60,7 @@ export function socialDimensions(platform) {
 }
 
 export function socialHtml(kit,image,index,platform) {
+  if(kit.marketSnapshot)return marketGraph(kit.marketSnapshot,{title:kit.title,platform,index});
   const {height}=socialDimensions(platform), slide=kit.slides[index];
   if (!slide || !Number.isInteger(index) || !/^[A-Za-z0-9+/=]+$/.test(image) || image.length>2_400_000) throw new Error('Invalid social asset');
   const cover=index===0, tall=height===1920;

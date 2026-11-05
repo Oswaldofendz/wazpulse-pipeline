@@ -6,6 +6,7 @@ import {createMedia} from './media.js';
 import {createStorage} from './storage.js';
 import {createChannels} from './channels.js';
 import {shareXRequest} from './share-x.js';
+import {createFast} from './fast.js';
 
 const json = (data, status = 200) => Response.json(data, {status, headers: {'Cache-Control': 'no-store'}});
 const active = env => env.PIPELINE_ENABLED === 'true';
@@ -23,7 +24,7 @@ export default {
     const path = new URL(request.url).pathname;
     if(path==='/share/x'||path.startsWith('/share/x/'))return shareXRequest(request,env);
     if (path === '/health' && request.method === 'GET') {
-      return json({service: 'wacapital-online', version: '0.3.1', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
+      return json({service: 'wacapital-online', version: '0.4.0', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
     }
     if (path === '/telegram/webhook' && request.method === 'POST') {
       if (!await secretMatches(request.headers.get('X-Telegram-Bot-Api-Secret-Token'), env.TELEGRAM_WEBHOOK_SECRET)) return json({error: 'Unauthorized'}, 401);
@@ -47,6 +48,9 @@ export default {
       try {
         const pipeline = createPipeline(env);
         if (path === '/admin/status' && request.method === 'GET') return json(await pipeline.status());
+        if(path==='/admin/fast-status'&&request.method==='GET')return json(await createFast(env).status());
+        if(path==='/admin/fast-tick'&&request.method==='POST')return json(await createFast(env).tick());
+        if(path==='/admin/fast-probe'&&request.method==='POST')return json(await createFast(env).probeCrypto());
         if(path==='/admin/share-x-status'&&request.method==='GET') {
           const row=await store(env.DB).first("SELECT value FROM runtime WHERE key='share_x_last_error'");
           return json({lastError:row?JSON.parse(row.value):null});
@@ -139,11 +143,26 @@ export default {
   },
   async scheduled(event, env, ctx) {
     if (active(env) && env.DB) {
-      // Media advances one durable step per minute. News intake stays at its
-      // original ten-minute cadence, so this does not increase LLM requests.
+      // Fast observation is independent of Render and media work. Redaction
+      // drains more often but keeps the same shared hard daily call budget.
       const minute = new Date(event.scheduledTime).getUTCMinutes();
+      if(env.FAST_ENABLED==='true') {
+        ctx.waitUntil((async()=>{
+          const pulse=await createFast(env).tick();
+          // Sending a new urgent alert takes precedence over background jobs.
+          if(pulse.state!=='ok'||pulse.prices?.id||pulse.feeds?.some(f=>f.attempts>0))return;
+          const pipeline=createPipeline(env);if(await pipeline.drainInbox(1))return;
+          if(minute===1){await createStorage(env).cleanup();return;}
+          if(minute%2===1){await pipeline.tick({collect:minute%10===3,inbox:false});return;}
+          if(env.MEDIA_ENABLED==='true') {
+            const result=await createChannels(env).step();
+            if(result.state==='idle')await createMedia(env).step();
+          }
+        })());
+        return;
+      }
       if (minute === 1) ctx.waitUntil(createStorage(env).cleanup());
-      else if (minute % 10 === 3) ctx.waitUntil(createPipeline(env).tick());
+      else if (env.FAST_ENABLED!=='true'&&minute % 10 === 3) ctx.waitUntil(createPipeline(env).tick());
       else if (env.MEDIA_ENABLED === 'true') ctx.waitUntil((async()=>{
         const result=await createChannels(env).step();
         if(result.state==='idle')await createMedia(env).step();

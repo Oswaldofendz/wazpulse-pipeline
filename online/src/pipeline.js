@@ -3,6 +3,7 @@ import {store} from './store.js';
 import {network, telegram, ServiceError} from './io.js';
 import {createMedia} from './media.js';
 import {createChannels, newsCard, newsButtons} from './channels.js';
+import {createFast} from './fast.js';
 
 const enabled = value => value === 'true';
 const boundedInt = (value, fallback, max) => {
@@ -29,6 +30,15 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
   }
 
   async function sendReview(id, force = false) {
+    if(!force) {
+      const fast=await db.first("SELECT s.* FROM stories s JOIN fast_events f ON f.story_id=s.id WHERE s.id=? AND s.state='ready' AND s.notification='sent' AND length(s.message_id)>0 AND f.kind='news'",id);
+      if(fast) {
+        const claim=await db.first("UPDATE stories SET notification='sending' WHERE id=? AND state='ready' AND notification='sent' RETURNING id",id);
+        if(!claim)return false;
+        try {await bot.edit(fast.message_id,newsCard(fast),newsButtons(id));await db.notified(id,Number(fast.message_id));return true;}
+        catch {await db.uncertain(id);return false;}
+      }
+    }
     const story = await db.notification(id, force);
     if (!story) return false;
     try {
@@ -96,7 +106,15 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
       await bot.send('WaCapital · ' + (active() ? 'Activo' : 'Pausado') +
         '\nLlamadas editoriales hoy: ' + result.dailyBackendCalls + '/' + result.dailyLimit +
         '\nEstados: ' + result.states.map(x => x.state + ': ' + x.count).join(', ') +
-        '\n/pendientes · /paquetes · /revisar ID · /paquete ID · /imagenes ID · /reenviar ID · /publicar ID · /redes ID');
+        '\n/rapido · /pendientes · /paquetes · /revisar ID · /paquete ID · /imagenes ID · /reenviar ID · /publicar ID · /redes ID');
+    } else if(command==='/rapido') {
+      const s=await createFast(env,{fetcher,now}).status(),fresh=s.quotes.filter(q=>q.ageSeconds!==null&&q.ageSeconds<=180);
+      await bot.send('⚡ WaCapital · Vía rápida\n'+(s.enabled?(s.alertsEnabled?'Avisos activos':'Observación sin avisos'):'Pausada')+
+        '\nÚltima revisión: '+(s.last?new Date(s.last.at).toISOString().slice(11,19)+' UTC':'pendiente')+
+        '\nAvisos hoy: '+(s.budget?.alerts_used||0)+'/'+s.dailyAlertLimit+
+        '\nCotizaciones recientes: '+fresh.map(q=>q.name+' ('+q.ageSeconds+' s)').join(', ')+
+        '\nFuentes directas: '+s.feeds.filter(f=>f.lastSuccess&&now()-f.lastSuccess<5*60_000).length+'/'+s.feeds.length+
+        '\nLas alertas no publican en redes.');
     } else if (command === '/pendientes') {
       const rows = await db.all("SELECT id,title FROM stories WHERE state IN ('ready','pending') AND published_at>=? ORDER BY priority DESC LIMIT 5", now() - DAY);
       await bot.send(rows.length ? rows.map(x => x.title.slice(0, 180) + '\n/revisar ' + x.id).join('\n\n') : 'No hay materiales pendientes recientes.');
@@ -124,30 +142,34 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
   }
 
   async function drainInbox(max = 2) {
-    if (!active()) return;
+    if (!active()) return 0;
+    let processed=0;
     for (let n = 0; n < max; n++) {
       const row = await db.claimUpdate(now());
       if (!row) break;
+      processed++;
       try {
         await handleUpdate(JSON.parse(row.payload));
         await db.finishUpdate(row.update_id);
       } catch { await db.failUpdate(row.update_id, row.attempts, now()); }
     }
+    return processed;
   }
 
-  async function tick() {
+  async function tick({collect=true,inbox=true}={}) {
     if (!active()) return {state: 'paused'};
     const owner = crypto.randomUUID(), instant = now();
     if (!await db.lock('tick', owner, instant, 8 * 60_000)) return {state: 'busy'};
     const result = {at: new Date(instant).toISOString(), state: 'ok', inserted: 0, editorial: 0, notifications: 0};
     let stage = 'inbox';
     try {
-      await drainInbox(2);
+      if(inbox)await drainInbox(2);
       stage = 'capacity';
       const size = await db.first('SELECT COUNT(*) AS count FROM stories');
       if (size.count >= 5000) {
         result.state = 'storage-cap';
-      } else {
+      } else if(collect) {
+        try {
         // This existing endpoint performs RSS aggregation; no provider keys move.
         stage = 'source';
         const source = await net.json(BACKEND + '/api/market/impact-alerts');
@@ -155,22 +177,25 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
         if (['ok', 'partial'].includes(source.status) && Array.isArray(source.alerts)) {
           const candidates = source.alerts.slice(0, 40).filter(a => typeof a.priority === 'number' && a.priority >= minimum())
             .sort((a, b) => b.priority - a.priority || Date.parse(b.publishedAt) - Date.parse(a.publishedAt));
+          const incoming=[];
           for (const article of candidates.slice(0, 8)) {
             stage = 'normalize';
             const story = await normalizeStory(article, instant);
             if (story) {
-              stage = 'insert';
-              const saved = await db.insert(story, instant);
-              result.inserted += saved.meta?.changes || 0;
+              incoming.push(story);
             }
           }
+          stage='insert';result.inserted+=await db.insertMany(incoming,instant);
         }
+        }catch(error){result.state='source-unavailable';if(error instanceof ServiceError){result.failure=error.service;result.upstreamStatus=error.status;}}
       }
       if (enabled(env.AI_ENABLED)) {
         stage = 'editorial';
         const pending = await db.next(instant, instant - 6 * 3_600_000);
         const day = new Date(instant).toISOString().slice(0, 10);
-        if (pending && await db.reserve(day, boundedInt(env.DAILY_LLM_LIMIT, 6, 16))) {
+        const cap=boundedInt(env.DAILY_LLM_LIMIT,6,16);
+        const allowed=env.FAST_ENABLED==='true'&&pending?.priority<95?Math.max(0,cap-2):cap;
+        if (pending && await db.reserve(day, allowed)) {
           const story = await db.claim(pending.id, instant);
           if (story) {
             try {
@@ -192,7 +217,7 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
         }
       }
       stage = 'review';
-      const review = await db.first("SELECT id FROM stories WHERE state='ready' AND notification='new' AND published_at>=? ORDER BY priority DESC LIMIT 1", instant - DAY);
+      const review = await db.first("SELECT id FROM stories WHERE state='ready' AND (notification='new' OR (notification='sent' AND EXISTS(SELECT 1 FROM fast_events f WHERE f.story_id=stories.id AND f.kind='news'))) AND published_at>=? ORDER BY priority DESC,published_at DESC LIMIT 1", instant - DAY);
       if (review && env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) {
         result.notifications = Number(await sendReview(review.id));
       }

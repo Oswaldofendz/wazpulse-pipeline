@@ -12,7 +12,7 @@ const codes={x:'x',instagram:'i',tiktok:'t'};
 export function newsCard(story) {
   const e=JSON.parse(story.editorial);
   const date=new Date(story.published_at).toLocaleDateString('es-ES',{timeZone:'UTC',day:'2-digit',month:'short'});
-  return ['📰 '+e.headline,story.source+' · '+date].join('\n\n');
+  return ['📰 '+e.headline,story.source+' · '+date+(e.marketSnapshot?' · '+new Date(e.marketSnapshot.at).toISOString().slice(11,16)+' UTC':'')].join('\n\n');
 }
 export function newsButtons(id) {
   return {inline_keyboard:[[{text:'Aprobar para Twitter/X',callback_data:'pickx:'+id}],
@@ -27,7 +27,7 @@ function draftText(story,platform) {
     ...(platform==='x'?['Fuente: '+story.source_url]:[]),
     'Fecha original: '+kit.source.publishedAt.slice(0,10),
     platform==='tiktok'?'Formato: carrusel vertical 1080 × 1920; no vídeo.':platform==='instagram'?'Formato: 1080 × 1350.':'',
-    'Base: titular y extracto. Revisa la fuente. No publica en redes.'].filter(Boolean).join('\n\n');
+    JSON.parse(story.editorial).marketSnapshot?'Base: cotizaciones guardadas con hora de corte. Revisa precios y fecha antes de publicar.':'Base: titular y extracto. Revisa la fuente. No publica en redes.'].filter(Boolean).join('\n\n');
   // Telegram's limit is explicit; preserve complete copy in the on-demand file
   // rather than silently cutting a sentence to fit a chat bubble.
   return text.length<=3900?text:null;
@@ -176,7 +176,7 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
         return {state:'rendered',platform:job.platform,position};
       }
       await db.run("UPDATE channel_jobs SET state='sending',delivery='sending' WHERE story_id=? AND platform=?",job.story_id,job.platform);
-      const kind=result.brief.art?.mediaKind==='official-portraits'?'Montaje editorial · Retratos oficiales':'Ilustración con IA';
+      const kind=result.brief.art?.mediaKind==='market-chart'?'Gráfico con datos · Corte '+new Date(result.brief.marketSnapshot.at).toISOString().slice(11,16)+' UTC':result.brief.art?.mediaKind==='official-portraits'?'Montaje editorial · Retratos oficiales':'Ilustración con IA';
       const x=xPublication(story),caption=job.platform==='x'?'🖼 Twitter/X · Borrador\n\n'+x.text+'\n\n'+x.weightedLength+'/280 · '+kind:
         platforms[codes[job.platform]]+' · 5 láminas · Borrador\n'+JSON.parse(story.editorial).headline+'\n'+kind+' · '+job.story_id.slice(0,8);
       const sent=job.platform==='x'?[await bot.imageDocument(new Uint8Array(assets[0].png),assets[0].filename,caption)]:

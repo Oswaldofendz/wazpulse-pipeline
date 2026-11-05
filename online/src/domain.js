@@ -13,7 +13,7 @@ export function publicSourceUrl(value) {
   try {
     const u = new URL(value);
     const allowed = new Set(['www.federalreserve.gov', 'www.ecb.europa.eu', 'www.cnbc.com',
-      'www.coindesk.com', 'cointelegraph.com', 'www.bbc.co.uk', 'www.bbc.com']);
+      'www.coindesk.com', 'cointelegraph.com', 'www.bbc.co.uk', 'www.bbc.com','finance.yahoo.com','www.coinbase.com']);
     if (u.protocol !== 'https:' || u.username || u.password || (u.port && u.port !== '443') || !allowed.has(u.hostname)) return null;
     u.hash = '';
     for (const key of [...u.searchParams.keys()]) {

@@ -1,6 +1,7 @@
 import {store} from './store.js';
 import {readBounded, ServiceError} from './io.js';
 import {trump} from './portraits.js';
+import {CHART_PIXEL} from './market-graph.js';
 
 const HORDE = 'https://aihorde.net/api/v2';
 const headers = {'Content-Type': 'application/json', apikey: '0000000000', 'Client-Agent': 'WaCapital:1.0:https://github.com/Oswaldofendz/wazpulse-pipeline'};
@@ -23,6 +24,10 @@ export function createImages(env, {fetcher = fetch, now = Date.now, generate} = 
     const instant = now(), day = new Date(instant).toISOString().slice(0,10);
     await db.run('INSERT OR IGNORE INTO channel_images(story_id,manifest,created_at,updated_at) VALUES(?,?,?,?)',id,JSON.stringify(brief),instant,instant);
     let row = await db.first('SELECT * FROM channel_images WHERE story_id=?',id);
+    if(brief.art?.mediaKind==='market-chart'&&row.state==='new') {
+      await db.run("UPDATE channel_images SET state='ready',image=?,provider='data-chart',updated_at=? WHERE story_id=?",CHART_PIXEL,instant,id);
+      return {state:'ready',image:CHART_PIXEL,brief,provider:'data-chart'};
+    }
     if(brief.art?.mediaKind==='official-portraits'&&row.state==='new') {
       await db.run("UPDATE channel_images SET state='ready',image=?,provider='official-portraits',updated_at=? WHERE story_id=?",trump,instant,id);
       return {state:'ready',image:trump,brief,provider:'official-portraits'};

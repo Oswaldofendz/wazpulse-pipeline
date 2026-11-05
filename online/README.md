@@ -1,5 +1,12 @@
 # WaCapital online · primera versión
 
+**Última hora, 05/11/2026:** [vigilancia directa, fuentes rápidas y gráficos sin IA](../docs/ULTIMA-HORA-2026-11-05.md).
+Precios cada minuto y seis RSS directos cada dos minutos, independientes de la
+recopilación de WaStake. Aviso primero y redacción después en el mismo mensaje.
+Se conservan los límites gratuitos y la aprobación humana. La migración aditiva
+`fast-schema.sql` precede a activar las opciones privadas `FAST_ENABLED` y
+`FAST_ALERTS_ENABLED`. `/rapido` muestra la salud de esta vía.
+
 **Compartir desde el móvil:** [texto y portada juntos mediante el menú del sistema](../docs/COMPARTIR-X-2026-11-05.md).
 El nuevo botón aparece al aprobar X y mantiene las opciones manuales. Necesita
 verificación en el teléfono real; no publica ni utiliza la API de pago de X.
