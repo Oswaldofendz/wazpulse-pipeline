@@ -7,6 +7,8 @@ const routes = {
   tick: ['/admin/tick', 'POST'],
   'media-status': ['/admin/media-status', 'GET'],
   'media-step': ['/admin/media-step', 'POST'],
+  'channel-status': ['/admin/channel-status', 'GET'],
+  'channel-step': ['/admin/channel-step', 'POST'],
   'storage-status': ['/admin/storage-status', 'GET'],
   'storage-plan': ['/admin/storage-plan', 'GET'],
   'storage-cleanup': ['/admin/storage-cleanup', 'POST'],

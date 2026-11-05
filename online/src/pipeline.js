@@ -2,6 +2,7 @@ import {BACKEND, DAY, normalizeStory, validateEditorial, isOwner, makePack} from
 import {store} from './store.js';
 import {network, telegram, ServiceError} from './io.js';
 import {createMedia} from './media.js';
+import {createChannels, newsCard, newsButtons} from './channels.js';
 
 const enabled = value => value === 'true';
 const boundedInt = (value, fallback, max) => {
@@ -13,6 +14,7 @@ const boundedInt = (value, fallback, max) => {
 export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
   const db = store(env.DB), net = network(fetcher), bot = telegram(env, net);
   const media = createMedia(env, {fetcher, now});
+  const channels = createChannels(env, {fetcher, now});
   const active = () => enabled(env.PIPELINE_ENABLED);
   const minimum = () => boundedInt(env.MIN_PRIORITY, 65, 100);
   const strength = () => boundedInt(env.MIN_STRENGTH, 4, 5);
@@ -30,24 +32,7 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
     const story = await db.notification(id, force);
     if (!story) return false;
     try {
-      const e = JSON.parse(story.editorial);
-      const text = [
-        '📰 WaCapital · Revisión editorial', e.headline,
-        'Fuente: ' + story.source + ' · ' + new Date(story.published_at).toISOString(),
-        'Original: ' + story.title,
-        '🧠 Lectura propuesta: ' + e.angle,
-        e.reasoning,
-        'Relevancia editorial: ' + e.strength + '/5 · ' + e.provider,
-        'Base: titular y extracto RSS. Comprueba cifras y contexto en la fuente.',
-        story.source_url,
-        'Referencia: ' + story.id,
-        env.MEDIA_ENABLED === 'true' ? 'Aprobar prepara el texto y pone las imágenes con IA en cola. Recibirás la portada y cinco láminas para una segunda revisión. No publica en redes.' :
-          'Aprobar prepara el paquete de textos. La publicación en redes sigue siendo manual.'
-      ].join('\n\n');
-      const result = await bot.send(text.slice(0, 3900), {inline_keyboard: [[
-        {text: '✅ Aprobar material', callback_data: 'approve:' + story.id},
-        {text: '❌ Rechazar', callback_data: 'reject:' + story.id}
-      ]]});
+      const result = await bot.send(newsCard(story), newsButtons(story.id));
       if (!Number.isSafeInteger(result?.message_id)) throw new Error('Missing message ID');
       await db.notified(story.id, result.message_id);
       return true;
@@ -78,6 +63,19 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
       // Answer immediately; document generation uses no LLM and runs afterwards.
       await bot.answer(callback.id, 'Procesando revisión').catch(() => {});
       const [action, id] = callback.data.split(':');
+      if (/^pick[xit]$/.test(action)) {
+        await channels.pick(id,action.at(-1),callback.message.message_id);
+        return;
+      }
+      if (/^(gen|ok|cancel|info)[xit]$/.test(action)) {
+        await channels.action(action,id,callback.message.message_id);
+        return;
+      }
+      if(action==='approve'&&env.LEGACY_APPROVAL_ENABLED!=='true') {
+        const story=await db.first("SELECT * FROM stories WHERE id=? AND state IN ('pending','approved') AND message_id=?",id,String(callback.message.message_id));
+        if(story)await bot.edit(callback.message.message_id,newsCard(story),newsButtons(id));
+        return;
+      }
       if (action === 'visualok' || action === 'visualno') {
         await media.review(id, callback.message.message_id, action === 'visualok');
         return;

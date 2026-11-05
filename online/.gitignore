@@ -5,3 +5,4 @@ node_modules/
 wrangler.local.jsonc
 preview-output/
 .managed-secrets.dpapi
+work/

@@ -4,6 +4,7 @@ import {store} from './store.js';
 import {createPipeline} from './pipeline.js';
 import {createMedia} from './media.js';
 import {createStorage} from './storage.js';
+import {createChannels} from './channels.js';
 
 const json = (data, status = 200) => Response.json(data, {status, headers: {'Cache-Control': 'no-store'}});
 const active = env => env.PIPELINE_ENABLED === 'true';
@@ -20,7 +21,7 @@ export default {
   async fetch(request, env, ctx) {
     const path = new URL(request.url).pathname;
     if (path === '/health' && request.method === 'GET') {
-      return json({service: 'wacapital-online', version: '0.2.0', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
+      return json({service: 'wacapital-online', version: '0.3.0', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
     }
     if (path === '/telegram/webhook' && request.method === 'POST') {
       if (!await secretMatches(request.headers.get('X-Telegram-Bot-Api-Secret-Token'), env.TELEGRAM_WEBHOOK_SECRET)) return json({error: 'Unauthorized'}, 401);
@@ -46,6 +47,13 @@ export default {
         if (path === '/admin/status' && request.method === 'GET') return json(await pipeline.status());
         if (path === '/admin/tick' && request.method === 'POST') return json(await pipeline.tick());
         if (path === '/admin/media-step' && request.method === 'POST') return json(await createMedia(env).step());
+        if (path === '/admin/channel-step' && request.method === 'POST') return json(await createChannels(env).step());
+        if (path === '/admin/channel-status' && request.method === 'GET') {
+          const db=store(env.DB);
+          return json({jobs:await db.all('SELECT story_id,platform,state,delivery,error FROM channel_jobs ORDER BY created_at DESC LIMIT 10'),
+            images:await db.all('SELECT story_id,state,provider,error FROM channel_images ORDER BY created_at DESC LIMIT 10'),
+            budget:await db.all('SELECT * FROM image_provider_budget ORDER BY day DESC LIMIT 4')});
+        }
         if (path === '/admin/storage-status' && request.method === 'GET') return json(await createStorage(env).status());
         if (path === '/admin/storage-plan' && request.method === 'GET') return json(await createStorage(env).plan());
         if (path === '/admin/storage-cleanup' && request.method === 'POST') return json(await createStorage(env).cleanup());
@@ -130,7 +138,10 @@ export default {
       const minute = new Date(event.scheduledTime).getUTCMinutes();
       if (minute === 1) ctx.waitUntil(createStorage(env).cleanup());
       else if (minute % 10 === 3) ctx.waitUntil(createPipeline(env).tick());
-      else if (env.MEDIA_ENABLED === 'true') ctx.waitUntil(createMedia(env).step());
+      else if (env.MEDIA_ENABLED === 'true') ctx.waitUntil((async()=>{
+        const result=await createChannels(env).step();
+        if(result.state==='idle')await createMedia(env).step();
+      })());
     }
   }
 };

@@ -11,6 +11,26 @@ const story = (title, extra = {}) => ({
     reasoning: 'Comprobar los datos. Leer el original. Contrastar las actualizaciones.', instagram: 'Prueba de composición.'}, ...extra
 });
 
+test('political confrontation uses the named public figures, never unrelated Bitcoin or anonymous faces',()=>{
+  const input=story('Vance walks Trump tightrope with scathing election critique blaming Iran war',{
+    snippet:'Political criticism, not a cryptocurrency event. Bitcoin markets mentioned elsewhere.',assets:'["BTC"]'});
+  const brief=visualBrief(input);
+  assert.equal(brief.art.event,'politics');
+  assert.equal(brief.art.faceoff,true);
+  assert.equal(brief.art.layout,'masthead');
+  assert.equal(brief.art.mediaKind,'official-portraits');
+  const html=visualHtml(brief,'/9j/AAAA');
+  assert.match(html,/Retrato oficial de Donald Trump/);
+  assert.match(html,/Retrato oficial de JD Vance/);
+  assert.match(html,/MONTAJE EDITORIAL/);
+  assert.doesNotMatch(html,/ILUSTRACIÓN CON IA/);
+  assert.match(brief.prompt,/Donald Trump.*JD Vance/);
+  assert.match(brief.prompt,/boxing.*poster|boxing-poster/);
+  assert.doesNotMatch(brief.prompt,/bitcoin|coins|cryptocurrency/i);
+  assert.doesNotMatch(brief.prompt,/Avoid identifiable faces/);
+  assert.equal(artDirection(story('Trump and Vance attend a ceremony')).faceoff,false);
+});
+
 test('the three reported headlines receive distinct event-specific scenes', () => {
   const inputs = [
     ['THORChain halts swaps after critical bug', 'interruption'],
@@ -21,7 +41,7 @@ test('the three reported headlines receive distinct event-specific scenes', () =
     const art = artDirection(story(title));
     assert.equal(art.event, event);
     assert.doesNotMatch(art.scene, /vault|padlock|bitcoin|server rack/i);
-    assert.ok(art.subject.includes('Do not add Bitcoin'));
+    assert.ok(art.subject.includes('No currency'));
     return art.scene;
   });
   assert.equal(new Set(directions).size, 3);
@@ -56,7 +76,7 @@ test('consecutive jobs vary scenes, palettes and compositions without random ret
 
 test('Bitcoin symbols are not prescribed for unrelated tokens, companies or policy', () => {
   for (const title of ['THORChain pauses swaps', 'Amazon quarterly earnings', 'Fed policy decision']) {
-    assert.ok(artDirection(story(title)).subject.includes('Do not add Bitcoin'));
+    assert.ok(artDirection(story(title)).subject.includes('No currency'));
   }
   assert.ok(artDirection(story('Bitcoin market update')).subject.startsWith('Bitcoin symbolism'));
 });

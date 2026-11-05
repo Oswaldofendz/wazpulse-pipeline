@@ -7,6 +7,11 @@ const themes = {
   daylight: {accent: '#7dd3fc', rule: '#38bdf8', lighting: 'natural window light, warm ivory surfaces and ink-blue shadows'}
 };
 const scenes = {
+  politics: [
+    'two opposing press lecterns facing each other in a divided parliamentary chamber, editorial political disagreement',
+    'a split diplomatic meeting table with two empty chairs facing each other, conceptual political tension',
+    'two opposing silhouettes at press microphones in a government setting, editorial political debate'
+  ],
   recovery: [
     'a restored bridge of light connecting two abstract payment terminals, editorial metaphor for service resumption',
     'a close view of an anonymous operator reconnecting a fibre-optic cable at a network switch',
@@ -50,6 +55,8 @@ const scenes = {
 };
 const normal = text => String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 function eventOf(text) {
+  if (/\btrump\b|\bvance\b|\belection\w*|\belectoral\w*|\bpresident\w*|\bwhite house\b|\bcasa blanca\b|\bdiplomac\w*|\biran\b|\bwar\b|\bguerra\b/.test(text) &&
+      !/\bbitcoin\b|\bbtc\b|\bethereum\b|\bcrypto\w*|\bcripto\w*/.test(text)) return 'politics';
   const recovery = /\breopen\w*|\bresum\w*|\brestor\w*|\breanud\w*|\breabr\w*|\brestablec\w*|\bopens?\b.{0,32}\bwithdrawals?\b|\babre\w*\b.{0,24}\bretiros?\b/;
   if (recovery.test(text)) {
     // A denied or merely proposed reopening must not look like a completed restoration.
@@ -85,13 +92,16 @@ export function artDirection(story, recent = []) {
   const theme = pick(Object.keys(themes), seed >>> 3, prior.map(x => x.theme));
   const layout = pick(['poster', 'masthead', 'split'], seed >>> 6, prior.map(x => x.layout));
   // Only the source's named asset may receive its own symbol. Altcoins are not Bitcoin.
-  const bitcoin = /\bbitcoin\b|\bbtc\b/i.test(story.title + ' ' + story.snippet);
+  const bitcoin = event !== 'politics' && /\bbitcoin\b|\bbtc\b/i.test(story.title);
+  const faceoff = event === 'politics' && /\btrump\b/.test(normal(story.title)) && /\bvance\b/.test(normal(story.title)) &&
+    /critique|critic\w*|tightrope|rompe|ruptura|enfrent\w*|versus|\bvs\b|blam\w*|culp\w*|clash|rift/.test(normal(story.title+' '+story.snippet));
   return {
-    event, sceneId, theme, layout, ...themes[theme],
-    scene: scenes[event][Number(sceneId.split('-').at(-1))],
+    event, sceneId: faceoff ? 'politics-faceoff' : sceneId, theme, layout:faceoff?'masthead':layout, ...themes[theme],
+    scene: faceoff ? 'Donald Trump on the left, elderly man with swept blond hair, facing JD Vance on the right, younger man about forty with short dark brown hair and a full brown beard, recognizable editorial painted portraits, symmetrical boxing-poster-style political face-off composition, formal suits, no real fight, plain divided backdrop' : scenes[event][Number(sceneId.split('-').at(-1))],
+    faceoff,
     subject: bitcoin ? 'Bitcoin symbolism is appropriate only as an editorial metaphor.' :
-      'Do not add Bitcoin symbols or generic gold cryptocurrency coins. Depict the actual subject of the source.',
-    framing: layout === 'split' ? 'Asymmetric composition, subject in the upper two-thirds, rich environmental depth.' :
+      'Depict only the actual subject of the source. No currency, coins or unrelated financial imagery.',
+    framing: faceoff ? 'Both faces fully visible within the central square, equal visual importance, no text over faces.' : layout === 'split' ? 'Asymmetric composition, subject in the upper two-thirds, rich environmental depth.' :
       layout === 'masthead' ? 'Wide environmental composition with breathing room around the focal subject.' :
         'A strong photographic focal subject with shallow depth of field.'
   };

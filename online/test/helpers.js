@@ -11,8 +11,14 @@ export function database() {
   const native = new DatabaseSync(':memory:');
   native.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
   native.exec(readFileSync(new URL('../media-schema.sql', import.meta.url), 'utf8'));
+  native.exec(readFileSync(new URL('../platform-schema.sql', import.meta.url), 'utf8'));
   return {
     native,
+    async batch(statements) {
+      native.exec('BEGIN');
+      try {const result=[];for(const stmt of statements)result.push(await stmt.run());native.exec('COMMIT');return result;}
+      catch(error){native.exec('ROLLBACK');throw error;}
+    },
     prepare(sql) {
       const stmt = native.prepare(sql);
       return {
@@ -59,6 +65,7 @@ export function setup(overrides = {}) {
   const state = {news: [article()], angle: angle(), calls: [], documents: [], messages: [], failAI: false, failTelegram: false};
   const env = {
     DB: db, PIPELINE_ENABLED: 'true', AI_ENABLED: 'true', DAILY_LLM_LIMIT: '6',
+    LEGACY_APPROVAL_ENABLED:'true',
     TELEGRAM_CHAT_ID: '123', TELEGRAM_APPROVER_ID: '123',
     TELEGRAM_BOT_TOKEN: 'test-only', ...overrides
   };

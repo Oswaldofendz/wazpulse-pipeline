@@ -3,6 +3,7 @@ import {network, telegram, ServiceError} from './io.js';
 import {visualBrief, visualHtml, visualDimensions, xPublication} from './publication.js';
 import {createStorage} from './storage.js';
 import {socialKit, socialText, socialHtml, socialDimensions} from './social.js';
+import {trump} from './portraits.js';
 
 const limit = value => /^([0-6])$/.test(String(value)) ? Number(value) : 3;
 const enabled = env => env.PIPELINE_ENABLED === 'true' && env.MEDIA_ENABLED === 'true';
@@ -25,6 +26,7 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
   }
 
   async function generateImage(brief) {
+    if(brief.art?.mediaKind==='official-portraits')return trump;
     if (generate) return generate(brief);
     if (!env.AI) throw new ServiceError('ai-binding');
     const response = await env.AI.run(brief.model, {prompt: brief.prompt, steps: brief.steps});
@@ -244,8 +246,10 @@ export function createMedia(env, {fetcher = fetch, now = Date.now, render, gener
       if (!saved) {
         if (!await storage.allow()) return {state: 'storage-paused'};
         const day = new Date(instant).toISOString().slice(0, 10);
+        if(previewBrief.art?.mediaKind!=='official-portraits') {
         await db.run('INSERT OR IGNORE INTO visual_budget(day,used) VALUES(?,0)', day);
         if (!await db.first('UPDATE visual_budget SET used=used+1 WHERE day=? AND used<? RETURNING used', day, limit(env.DAILY_VISUAL_LIMIT))) return {state: 'daily-limit'};
+        }
         const brief = previewBrief;
         saved = {brief, image: await generateImage(brief)};
         visualHtml(brief, saved.image);

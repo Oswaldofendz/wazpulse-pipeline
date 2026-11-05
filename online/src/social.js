@@ -1,4 +1,6 @@
 import {coverSubtitle, xPublication, escapeHtml} from './publication.js';
+import {artDirection} from './art-direction.js';
+import {composePortraits,portraitCredits} from './portraits.js';
 
 const clean = value => String(value || '').replace(/[\u0000-\u001f]/g,' ').replace(/\s+/g,' ').trim();
 const segmenter = new Intl.Segmenter('es',{granularity:'sentence'});
@@ -28,7 +30,7 @@ export function socialKit(story) {
   return {version:1,state:'draft',requiresReview:true,storyId:story.id,
     audience:'Hispanohablantes de ambos lados del Atlántico',
     source:{name:story.source,url:story.source_url,publishedAt:new Date(story.published_at).toISOString(),basis:'Titular/extracto y redacción previamente aprobada; no verificación del artículo completo.'},
-    title,x:xPublication(story),
+    title,x:xPublication(story),...(artDirection(story).faceoff?{mediaCredits:portraitCredits}:{}),
     hooks:[{type:'directo',text:title},{type:'contexto',text:'El contexto de este anuncio: '+title},{type:'pregunta',text:'¿Qué cambia con este anuncio? '+title}],
     slides,instagram:{width:1080,height:1350,caption:[title,context,'¿Qué dato te falta para entender mejor esta noticia?','Fuente: '+story.source_url].join('\n\n')},
     tiktok:{width:1080,height:1920,caption:[title,'Qué pasó y qué falta por confirmar.','Fuente: '+story.source_url].join('\n\n')},
@@ -62,7 +64,7 @@ export function socialHtml(kit,image,index,platform) {
   const cover=index===0, tall=height===1920;
   const date=new Date(kit.source.publishedAt).toLocaleDateString('es-ES',{timeZone:'UTC',day:'2-digit',month:'short',year:'numeric'});
   const host=new URL(kit.source.url).hostname.replace(/^www\./,'');
-  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'"><style>
+  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'"><style>
   *{box-sizing:border-box}html,body{margin:0;width:1080px;height:${height}px;overflow:hidden;background:#09171c;color:#f4fbfb;font-family:Arial,Helvetica,sans-serif}
   .top{position:absolute;top:50px;left:56px;right:56px;display:flex;justify-content:space-between;color:#79e5cb;font-size:23px;font-weight:bold;letter-spacing:2px}
   .headline{position:absolute;top:140px;left:56px;right:56px;height:${cover?'225':'265'}px;border-top:5px solid #38d9b0;padding-top:24px}
@@ -78,4 +80,5 @@ export function socialHtml(kit,image,index,platform) {
   <div class="body fit"><p>${escapeHtml(slide.body)}</p></div>
   <div class="footer"><div class="brand">WaCapital</div><div>${escapeHtml(host)} · ${escapeHtml(date)}</div><div class="tag">${cover?'Ilustración con IA · ':''}Borrador para revisión · ${escapeHtml(kit.storyId.slice(0,8))}</div></div>
   <script>for(const box of document.querySelectorAll('.fit')){const text=box.firstElementChild;let n=0;while((box.scrollHeight>box.clientHeight||box.scrollWidth>box.clientWidth)&&n++<130){const size=parseFloat(getComputedStyle(text).fontSize);if(size<=28)break;text.style.fontSize=(size-.5)+'px';}}document.documentElement.dataset.fits=String([...document.querySelectorAll('.fit')].every(x=>x.scrollHeight<=x.clientHeight&&x.scrollWidth<=x.clientWidth));</script></body></html>`;
+  return kit.mediaCredits?composePortraits(html).replace('Ilustración con IA · ','Montaje editorial · ').replace('Borrador para revisión · ','Fotos: Daniel Torok / Wikimedia · Borrador · '):html;
 }

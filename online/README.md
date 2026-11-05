@@ -1,5 +1,12 @@
 # WaCapital online · primera versión
 
+**Actualización 05/11/2026:** [revisión móvil por red y respaldo de imágenes](../docs/TELEGRAM-MOVIL-2026-11-05.md).
+La notificación inicial es breve. Elegir Twitter/X, TikTok o Instagram muestra
+solo su borrador; un segundo botón prepara una portada X o cinco láminas de la
+red elegida. Los carruseles se entregan agrupados, sin volver a enviar archivos
+al aprobar la versión final. Aplicar `platform-schema.sql` antes de desplegar.
+El resto de este documento incluye descripciones históricas del flujo anterior.
+
 Recoge noticias del agregador público de WaStake, prepara materiales editoriales
 con su IA actual y los envía a revisión del propietario por Telegram.
 Después de aprobar, entrega un archivo de texto con X, Instagram, carrusel,

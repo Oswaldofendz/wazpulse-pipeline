@@ -28,14 +28,14 @@ export async function readBounded(response, maxBytes = 240_000) {
 
 export function network(fetcher = fetch) {
   return {
-    async json(url, options = {}, timeout = 20_000) {
+    async json(url, options = {}, timeout = 20_000, uploadLimit = 2_100_000) {
       let response;
       if(options.body instanceof FormData){
         // Workers can stream FormData with no known length. Materialize this
         // bounded upload so the origin receives a fixed-length request body.
         const encoded=new Response(options.body);
         const body=await encoded.arrayBuffer();
-        if(body.byteLength>2_100_000)throw new ServiceError('upload-size');
+        if(body.byteLength>Math.min(uploadLimit,10_000_000))throw new ServiceError('upload-size');
         const headers=new Headers(options.headers);
         headers.set('Content-Type',encoded.headers.get('Content-Type'));
         options={...options,headers,body};
@@ -59,6 +59,7 @@ export function telegram(env, net) {
     const data = await net.json(url(method), {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
     }, 8000);
+    if(!data.ok && method==='editMessageText' && data.error_code===400 && /message is not modified/i.test(data.description||''))return {message_id:body.message_id};
     if (!data.ok) throw new ServiceError('telegram', data.error_code || 0);
     return data.result;
   }
@@ -74,6 +75,20 @@ export function telegram(env, net) {
       ...(keyboard ? {reply_markup: keyboard} : {})
     }),
     answer: (id, text) => call('answerCallbackQuery', {callback_query_id: id, text}),
+    edit: (messageId, text, keyboard) => call('editMessageText', {
+      chat_id: env.TELEGRAM_CHAT_ID, message_id: Number(messageId), text,
+      link_preview_options: {is_disabled:true}, reply_markup: keyboard || {inline_keyboard:[]}
+    }),
+    async album(assets, caption) {
+      const form=new FormData();
+      form.set('chat_id',env.TELEGRAM_CHAT_ID);
+      form.set('disable_notification','true');
+      form.set('media',JSON.stringify(assets.map((asset,i)=>({type:'document',media:'attach://image'+i,...(i===0?{caption}:{} )}))));
+      for(const [i,asset] of assets.entries())form.set('image'+i,new Blob([asset.png],{type:'image/png'}),asset.filename);
+      const result=await net.json(url('sendMediaGroup'),{method:'POST',body:form},45_000,10_000_000);
+      if(!result.ok)throw new ServiceError('telegram-album',result.error_code||0);
+      return result.result;
+    },
     async imageDocument(image, filename, caption) {
       const form = new FormData();
       form.set('chat_id', env.TELEGRAM_CHAT_ID);

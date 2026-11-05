@@ -10,6 +10,7 @@ const previewClock = 'retention_preview:';
 const imageClock = 'retention_image:';
 const complete = alias => `(SELECT COUNT(*) FROM visual_assets a WHERE a.story_id=${alias}.story_id AND a.delivery='sent' AND length(a.file_id)>0 AND a.png IS NULL)=6`;
 const born = alias => `CASE WHEN json_valid(${alias}.value) THEN CASE WHEN json_type(${alias}.value)='integer' THEN CAST(${alias}.value AS INTEGER) ELSE NULL END ELSE NULL END`;
+const channelsComplete = alias => `EXISTS(SELECT 1 FROM channel_jobs j WHERE j.story_id=${alias}.story_id) AND NOT EXISTS(SELECT 1 FROM channel_jobs j WHERE j.story_id=${alias}.story_id AND (j.state NOT IN ('review','approved','rejected') OR j.delivery!='sent' OR (SELECT COUNT(*) FROM channel_assets a WHERE a.story_id=j.story_id AND a.platform=j.platform AND length(a.file_id)>0 AND a.png IS NULL)!=CASE WHEN j.platform='x' THEN 1 ELSE 5 END))`;
 
 export function createStorage(env, {fetcher = fetch, now = Date.now} = {}) {
   const db = store(env.DB);
@@ -66,9 +67,11 @@ export function createStorage(env, {fetcher = fetch, now = Date.now} = {}) {
       await db.run(`INSERT OR IGNORE INTO runtime(key,value) SELECT ?||j.story_id,? FROM visual_jobs j WHERE j.image IS NOT NULL AND j.state IN ('review','approved','rejected') AND ${complete('j')} AND NOT EXISTS(SELECT 1 FROM runtime c WHERE c.key=?||j.story_id) LIMIT 10`, imageClock, JSON.stringify(instant), imageClock);
       const deleted = await db.run(`DELETE FROM runtime WHERE key IN (SELECT r.key FROM runtime r JOIN runtime c ON c.key=?||r.key WHERE r.key GLOB 'visual_preview:*' AND ${born('c')}>0 AND ${born('c')}<=? LIMIT 10)`, previewClock, instant - PREVIEW_AGE);
       const released = await db.run(`UPDATE visual_jobs SET image=NULL WHERE story_id IN (SELECT j.story_id FROM visual_jobs j JOIN runtime c ON c.key=?||j.story_id WHERE j.image IS NOT NULL AND j.state IN ('review','approved','rejected') AND ${complete('j')} AND ${born('c')}>0 AND ${born('c')}<=? LIMIT 10)`, imageClock, instant - IMAGE_AGE);
+      await db.run(`INSERT OR IGNORE INTO runtime(key,value) SELECT 'retention_channel:'||i.story_id,? FROM channel_images i WHERE i.image IS NOT NULL AND ${channelsComplete('i')} LIMIT 10`,JSON.stringify(instant));
+      const channelReleased=await db.run(`UPDATE channel_images SET image=NULL WHERE story_id IN (SELECT i.story_id FROM channel_images i JOIN runtime c ON c.key='retention_channel:'||i.story_id WHERE i.image IS NOT NULL AND ${channelsComplete('i')} AND ${born('c')}>0 AND ${born('c')}<=? LIMIT 10)`,instant-IMAGE_AGE);
       await db.run(`DELETE FROM runtime WHERE key IN (SELECT c.key FROM runtime c WHERE substr(c.key,1,?)=? AND NOT EXISTS(SELECT 1 FROM runtime r WHERE r.key=substr(c.key,?)) LIMIT 10)`, previewClock.length, previewClock, previewClock.length + 1);
       const result = {at: new Date(instant).toISOString(), state: 'ok',
-        deletedPreviews: deleted.meta?.changes || 0, releasedBackgrounds: released.meta?.changes || 0,
+        deletedPreviews: deleted.meta?.changes || 0, releasedBackgrounds: released.meta?.changes || 0, releasedChannelBackgrounds:channelReleased.meta?.changes||0,
         bytes: await size(), limitBytes: STORAGE_LIMIT_BYTES};
       await db.set('storage_last_cleanup', result);
       return result;
