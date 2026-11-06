@@ -5,6 +5,7 @@ import {createMedia} from './media.js';
 import {createChannels, newsCard, newsButtons} from './channels.js';
 import {createFast} from './fast.js';
 import {FAST_EDITORIAL_PROVIDER} from './fast-editorial.js';
+import {shareOrigin} from './share-x.js';
 
 const enabled = value => value === 'true';
 const boundedInt = (value, fallback, max) => {
@@ -79,7 +80,7 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
         await channels.pick(id,action.at(-1),callback.message.message_id);
         return;
       }
-      if (/^(gen|ok|cancel|info)[xit]$/.test(action)) {
+      if (/^(gen[qh]|(?:gen|ok|cancel|info)[xit])$/.test(action)) {
         await channels.action(action,id,callback.message.message_id);
         return;
       }
@@ -108,7 +109,12 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
       await bot.send('WaCapital · ' + (active() ? 'Activo' : 'Pausado') +
         '\nLlamadas editoriales hoy: ' + result.dailyBackendCalls + '/' + result.dailyLimit +
         '\nEstados: ' + result.states.map(x => x.state + ': ' + x.count).join(', ') +
-        '\n/rapido · /pendientes · /paquetes · /revisar ID · /paquete ID · /imagenes ID · /reenviar ID · /publicar ID · /redes ID');
+        '\n/rapido · /pendientes · /paquetes · /revisar ID · /paquete ID · /imagenes ID · /reenviar ID · /publicar ID · /tiktok ID · /auditoria · /redes ID');
+    } else if (command === '/auditoria') {
+      const origin = shareOrigin(env);
+      if (origin) await bot.send('📊 WaCapital · Auditoría de redes\n\nRegistra y compara X, Instagram y TikTok. Los datos se guardan en el navegador donde los captures.', {
+        inline_keyboard: [[{text: 'Abrir auditor de cuentas', url: origin + '/auditoria'}]]
+      });
     } else if(command==='/rapido') {
       const s=await createFast(env,{fetcher,now}).status(),fresh=s.quotes.filter(q=>q.ageSeconds!==null&&q.ageSeconds<=180);
       await bot.send('⚡ WaCapital · Vía rápida\n'+(s.enabled?(s.alertsEnabled?'Avisos activos':'Observación sin avisos'):'Pausada')+
@@ -138,6 +144,8 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
     } else if (/^\/publicar [a-f0-9]{32}$/.test(command || '')) {
       const id=command.split(' ')[1];
       if (!await channels.refreshX(id) && !await media.prepareX(id)) await bot.send('Primero aprueba la versión visual y confirma la entrega de su portada. No se ha publicado nada.');
+    } else if (/^\/tiktok [a-f0-9]{32}$/.test(command || '')) {
+      if (!await channels.refreshTikTok(command.split(' ')[1])) await bot.send('Aprueba primero las cinco láminas de TikTok para recuperar su botón.');
     } else if (/^\/redes [a-f0-9]{32}$/.test(command || '')) {
       if(!await media.sendSocial(command.split(' ')[1]))await bot.send('Elige una noticia cuyo texto ya hayas aprobado. No se ha publicado nada.');
     }

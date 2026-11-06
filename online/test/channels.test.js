@@ -5,6 +5,7 @@ import {createChannels} from '../src/channels.js';
 import {createImages} from '../src/image-providers.js';
 import {minimalUpdate} from '../src/domain.js';
 import {visualBrief} from '../src/publication.js';
+import {shareXRequest} from '../src/share-x.js';
 import {createStorage} from '../src/storage.js';
 import {NOW,setup,callback,decodeUpload} from './helpers.js';
 const JPEG='/9j/'+'A'.repeat(160),PNG=new Uint8Array([137,80,78,71,13,10,26,10,1,2,3]);
@@ -81,7 +82,7 @@ test('X prepares just one PNG and keeps full tweet with weighted count; final ap
   assert.equal((await s.advance()).state,'idle');
 });
 test('Instagram and TikTok each send one five-document group, reuse one image and use their own dimensions',async()=>{
-  const s=await fixture();
+  const s=await fixture({WORKER_ORIGIN:'https://fixture.workers.dev',ADMIN_TOKEN:'test-only'});
   for(const [code,platform,height] of [['i','instagram',1350],['t','tiktok',1920]]) {
     await s.channels.pick(s.story.id,code,s.story.message_id);
     await s.channels.action('gen'+code,s.story.id,job(s,platform).draft_message);
@@ -96,6 +97,41 @@ test('Instagram and TikTok each send one five-document group, reuse one image an
   assert.equal(s.channelState.generated,1);
   assert.equal(s.channelState.uploads.length,2);
   assert.equal(s.state.messages.length,3);
+  await s.channels.action('okt',s.story.id,job(s,'tiktok').draft_message);
+  const link=s.channelState.edits.at(-1).reply_markup.inline_keyboard[0][0];
+  assert.equal(link.text,'Preparar post en TikTok');
+  assert.match(link.url,/^https:\/\/fixture\.workers\.dev\/share\/tiktok#/);
+  assert.equal(s.channelState.uploads.length,2);
+});
+test('the chosen X variant is used for review, caption and the signed mobile share link',async()=>{
+  const origin='https://fixture.workers.dev';
+  const s=await fixture({WORKER_ORIGIN:origin,ADMIN_TOKEN:'test-only'});
+  const editorial=JSON.parse(s.story.editorial);
+  editorial.headline='El Nasdaq cae un 3% tras los resultados de Nvidia';
+  editorial.tweet='La caída marca la sesión de las tecnológicas.';
+  s.db.native.prepare('UPDATE stories SET editorial=? WHERE id=?').run(JSON.stringify(editorial),s.story.id);
+  await s.p.handleUpdate(callback(s.story,{data:'pickx:'+s.story.id}));
+  const draft=s.state.messages.at(-1);
+  assert.match(draft.text,/Nvidia/);
+  assert.ok(draft.reply_markup.inline_keyboard.flat().some(button=>button.callback_data==='genh:'+s.story.id));
+  const message=Number(job(s).draft_message);
+  const select=callback(s.story,{data:'genh:'+s.story.id,message:{message_id:message,chat:{id:123}}});
+  assert.ok(minimalUpdate(select));
+  await s.p.handleUpdate(select);
+  await s.channels.action('genq',s.story.id,message);
+  for(let i=0;i<4;i++) await s.advance();
+  assert.match(s.channelState.uploads[0].get('caption'),/#Nasdaq/);
+  assert.match(s.channelState.edits.at(-1).text,/#Nasdaq/);
+  await s.channels.action('okx',s.story.id,message);
+  const link=s.channelState.edits.at(-1).reply_markup.inline_keyboard[0][0].url;
+  const [id,expires,kind,sig]=new URL(link).hash.slice(1).split('.');
+  const data=await shareXRequest(new Request(origin+'/share/x/data',{method:'POST',
+    body:JSON.stringify({id,expires:Number(expires),kind,sig})}),s.env,{now:()=>s.channelState.instant});
+  assert.equal(data.status,200);
+  const {text}=await data.json();
+  assert.match(text,/El Nasdaq cae un 3% tras los resultados de Nvidia/);
+  assert.match(text,/#Nasdaq$/);
+  assert.ok(s.channelState.edits.at(-1).text.includes(text));
 });
 test('repeated platform selection and generation cannot duplicate drafts or images',async()=>{
   const s=await fixture();

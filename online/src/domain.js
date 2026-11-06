@@ -76,7 +76,7 @@ export function minimalUpdate(update) {
   if (!Number.isSafeInteger(update?.update_id) || update.update_id < 0) return null;
   if (update.callback_query) {
     const q = update.callback_query;
-    if (typeof q.id !== 'string' || !/^(approve|reject|visualok|visualno|(?:pick|gen|ok|cancel|info)[xit]):[a-f0-9]{32}$/.test(q.data || '') ||
+    if (typeof q.id !== 'string' || !/^(approve|reject|visualok|visualno|gen[qh]|(?:pick|gen|ok|cancel|info)[xit]):[a-f0-9]{32}$/.test(q.data || '') ||
         !Number.isSafeInteger(q.message?.message_id)) return null;
     return {update_id: update.update_id, callback_query: {
       id: q.id.slice(0, 128), data: q.data, from: {id: q.from?.id},

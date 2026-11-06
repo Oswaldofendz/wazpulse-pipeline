@@ -6,6 +6,8 @@ import {createMedia} from './media.js';
 import {createStorage} from './storage.js';
 import {createChannels} from './channels.js';
 import {shareXRequest} from './share-x.js';
+import {shareTikTokRequest} from './share-tiktok.js';
+import {auditRequest} from './audit.js';
 import {createFast} from './fast.js';
 
 const json = (data, status = 200) => Response.json(data, {status, headers: {'Cache-Control': 'no-store'}});
@@ -23,8 +25,10 @@ export default {
   async fetch(request, env, ctx) {
     const path = new URL(request.url).pathname;
     if(path==='/share/x'||path.startsWith('/share/x/'))return shareXRequest(request,env);
+    if(path==='/share/tiktok'||path.startsWith('/share/tiktok/'))return shareTikTokRequest(request,env);
+    if(path==='/auditoria'||path==='/auditoria/app.js')return auditRequest(request);
     if (path === '/health' && request.method === 'GET') {
-      return json({service: 'wacapital-online', version: '0.4.1', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
+      return json({service: 'wacapital-online', version: '0.5.0', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
     }
     if (path === '/telegram/webhook' && request.method === 'POST') {
       if (!await secretMatches(request.headers.get('X-Telegram-Bot-Api-Secret-Token'), env.TELEGRAM_WEBHOOK_SECRET)) return json({error: 'Unauthorized'}, 401);

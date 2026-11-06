@@ -26,11 +26,16 @@ export function coverSubtitle(editorial) {
 // A Web Intent only carries text. Omit source links here to avoid a publisher's
 // unrelated card image. Attribution stays in the private pack and the PNG.
 // Keep complete units of approved copy; never truncate words or append ellipses.
-export function xPublication(story) {
+export function xPublication(story, selectedText = null) {
   const e = typeof story.editorial === 'string' ? JSON.parse(story.editorial) : story.editorial;
   const tweet = withoutLinks(e.tweet), headline = withoutLinks(e.headline);
   const fits = value => complete(value) && twitterText.parseTweet(value).valid;
-  let copy = fits(tweet) ? tweet : '', strategy = 'full';
+  let copy = selectedText ?? (fits(tweet) ? tweet : '');
+  let strategy = selectedText === null ? 'full' : 'selected';
+  if (selectedText !== null && !fits(selectedText)) {
+    return {text: selectedText, weightedLength: twitterText.parseTweet(selectedText).weightedLength,
+      composeUrl: null, ready: false, strategy: 'needs-edit', sourceUrl: story.source_url};
+  }
   if (!copy) {
     strategy = 'complete-sentences';
     // Prefer a complete subject-bearing headline to an isolated clickbait opening.
@@ -47,6 +52,53 @@ export function xPublication(story) {
   const composeUrl = 'https://twitter.com/intent/tweet?text=' + encodeURIComponent(text);
   return {text, weightedLength: result.weightedLength, composeUrl: composeUrl.length <= 2000 ? composeUrl : null,
     ready: true, strategy, sourceUrl: story.source_url};
+}
+
+const xTopics = [
+  {match: /\b(?:bitcoin|btc)\b/iu, tag: 'Bitcoin', question: '¿Qué nivel de Bitcoin estás siguiendo?'},
+  {match: /\b(?:ethereum|eth)\b/iu, tag: 'Ethereum', question: '¿Qué dato de Ethereum te parece más relevante?'},
+  {match: /\b(?:fed|reserva federal|fomc)\b/iu, tag: 'Fed', question: '¿Qué señal de la Fed te parece más importante?'},
+  {match: /\b(?:bce|banco central europeo)\b/iu, tag: 'BCE', question: '¿Qué señal del BCE estás siguiendo?'},
+  {match: /\bnasdaq\b/iu, tag: 'Nasdaq', question: '¿Qué dato del Nasdaq estás siguiendo?'},
+  {match: /S&P\s*500/iu, tag: 'SP500', question: '¿Qué cifra del S&P 500 estás siguiendo?'},
+  {match: /\bnvidia\b/iu, tag: 'Nvidia', question: '¿Qué dato de Nvidia te parece más relevante?'},
+  {match: /\b(?:inflaci[oó]n|IPC|CPI|PCE)\b/iu, tag: 'Inflación', question: '¿Qué dato de inflación te llamó la atención?'},
+  {match: /\b(?:empleo|desempleo|n[oó]minas)\b/iu, tag: 'Empleo', question: '¿Qué dato de empleo te parece más relevante?'}
+];
+
+export function xDraftOptions(story) {
+  const editorial = typeof story.editorial === 'string' ? JSON.parse(story.editorial) : story.editorial;
+  const original = xPublication(story);
+  if (!original.ready) return [];
+  const title = withoutLinks(editorial.headline);
+  const lead = /[.!?]$/u.test(title) ? title : title + '.';
+  // Give the named subject and figures in the headline the first line.
+  let direct = original.text;
+  const overlaps = similar(title, original.text);
+  const newFigure = (title.match(/\d+(?:[.,]\d+)*/g) || []).some(value => !original.text.includes(value));
+  if (!editorial.marketSnapshot && complete(title) && (!overlaps || newFigure)) {
+    const expanded = overlaps ? lead : lead + '\n\n' + original.text;
+    if (xPublication(story, expanded).ready) direct = expanded;
+    else if (xPublication(story, lead).ready) direct = lead;
+  }
+  const variants = [{code: 'x', label: 'Directo', text: direct}];
+  const topic = xTopics.find(({match}) => match.test(title)) || xTopics.find(({match}) => match.test(direct));
+  const question = topic?.question || '¿Qué dato de esta noticia te parece más importante?';
+  if (!direct.includes('?')) {
+    const text = direct + '\n\n' + question;
+    if (xPublication(story, text).ready) variants.push({code: 'q', label: 'Pregunta', text});
+  }
+  if (topic && !/(?:^|\s)#[\p{L}\d_]/u.test(direct)) {
+    const text = direct + '\n\n#' + topic.tag;
+    if (xPublication(story, text).ready) variants.push({code: 'h', label: 'Con etiqueta', text});
+  }
+  return variants;
+}
+
+export function selectedXText(record) {
+  if (!record) return null;
+  const draft = JSON.parse(record);
+  return draft.options.find(option => option.code === draft.selected)?.text ?? null;
 }
 
 export function visualBrief(story, {recent = []} = {}) {

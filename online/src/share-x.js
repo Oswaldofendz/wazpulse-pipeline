@@ -1,20 +1,28 @@
 import {store} from './store.js';
 import {network,telegram,readBounded,ServiceError} from './io.js';
-import {xPublication} from './publication.js';
+import {selectedXText, xPublication} from './publication.js';
 
-const WEEK=7*86_400_000;
+export const WEEK=7*86_400_000;
 const encoder=new TextEncoder();
-const headers={'Cache-Control':'private, no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff','X-Robots-Tag':'noindex, nofollow, noarchive','X-Frame-Options':'DENY'};
-const origin=env=>{
+export const shareHeaders={'Cache-Control':'private, no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff','X-Robots-Tag':'noindex, nofollow, noarchive','X-Frame-Options':'DENY'};
+const headers=shareHeaders;
+export const shareOrigin=env=>{
   try {const u=new URL(env.WORKER_ORIGIN);return u.protocol==='https:'&&u.hostname.endsWith('.workers.dev')&&u.pathname==='/'&&!u.search&&!u.hash?u.origin:null;}catch{return null;}
 };
-async function signature(env,id,expires,kind,cover,text) {
+const origin=shareOrigin;
+export async function shareSignature(env, fields) {
   const key=await crypto.subtle.importKey('raw',encoder.encode(env.ADMIN_TOKEN),{name:'HMAC',hash:'SHA-256'},false,['sign']);
-  const value=['wacapital-share-x-v1',id,expires,kind,cover.file_id,text].join('\n');
+  const value=fields.join('\n');
   return [...new Uint8Array(await crypto.subtle.sign('HMAC',key,encoder.encode(value)))].map(n=>n.toString(16).padStart(2,'0')).join('');
 }
-export async function shareXUrl(env,story,cover,kind='c',now=Date.now()) {
-  const base=origin(env),x=xPublication(story);
+const signature=(env,id,expires,kind,cover,text)=>shareSignature(env,['wacapital-share-x-v1',id,expires,kind,cover.file_id,text]);
+export function matchesShareSignature(expected, actual) {
+  let mismatch=0;
+  for(let i=0;i<expected.length;i++)mismatch|=expected.charCodeAt(i)^actual.charCodeAt(i);
+  return expected.length===actual.length&&!mismatch;
+}
+export async function shareXUrl(env,story,cover,kind='c',now=Date.now(),selectedText=null) {
+  const base=origin(env),x=xPublication(story,selectedText);
   if(!base||!env.ADMIN_TOKEN||!x.ready||!cover?.file_id||!['c','l'].includes(kind))return null;
   const expires=now+WEEK;
   const sig=await signature(env,story.id,expires,kind,cover,x.text);
@@ -28,9 +36,9 @@ export function xButtons(x,shareUrl) {
 async function approvedPair(env,id,kind) {
   const db=store(env.DB),story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",id);
   if(!story)return null;
-  const cover=kind==='c'?await db.first("SELECT a.file_id,a.filename FROM channel_assets a JOIN channel_jobs j ON j.story_id=a.story_id AND j.platform=a.platform WHERE a.story_id=? AND a.platform='x' AND a.position=0 AND j.state='approved' AND j.delivery='sent' AND length(a.file_id)>0",id):
+  const cover=kind==='c'?await db.first("SELECT a.file_id,a.filename,(SELECT value FROM runtime WHERE key='channel_x_copy:'||j.story_id) AS x_copy FROM channel_assets a JOIN channel_jobs j ON j.story_id=a.story_id AND j.platform=a.platform WHERE a.story_id=? AND a.platform='x' AND a.position=0 AND j.state='approved' AND j.delivery='sent' AND length(a.file_id)>0",id):
     await db.first("SELECT a.file_id,a.filename FROM visual_assets a JOIN visual_jobs j ON j.story_id=a.story_id WHERE a.story_id=? AND a.position=0 AND j.state='approved' AND a.delivery='sent' AND length(a.file_id)>0",id);
-  const x=xPublication(story);
+  const x=xPublication(story,selectedXText(cover?.x_copy));
   return cover&&x.ready?{story,cover,x}:null;
 }
 async function authorize(request,env,now) {
@@ -44,11 +52,9 @@ async function authorize(request,env,now) {
   const pair=await approvedPair(env,id,kind);
   if(!pair)return null;
   const expected=await signature(env,id,expires,kind,pair.cover,pair.x.text);
-  let mismatch=0;
-  for(let i=0;i<expected.length;i++)mismatch|=expected.charCodeAt(i)^sig.charCodeAt(i);
-  return mismatch?null:pair;
+  return matchesShareSignature(expected,sig)?pair:null;
 }
-async function imageBytes(response) {
+export async function imageBytes(response) {
   if(!response.ok)throw new ServiceError('share-image-download',response.status);
   if(Number(response.headers.get('content-length')||0)>1_900_000)throw new ServiceError('share-image-size');
   const reader=response.body?.getReader();if(!reader)throw Error('Image unavailable');

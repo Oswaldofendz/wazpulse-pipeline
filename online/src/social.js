@@ -8,6 +8,11 @@ const segmenter = new Intl.Segmenter('es',{granularity:'sentence'});
 const units = value => [...segmenter.segment(clean(value))].map(x=>x.segment.trim()).filter(Boolean);
 const short = (values, fallback) => values.flatMap(units).find(x=>x.length<=220) || fallback;
 
+export function tiktokCaption(story) {
+  const editorial = typeof story.editorial === 'string' ? JSON.parse(story.editorial) : story.editorial;
+  return [clean(editorial.headline), 'Qué pasó y qué falta por confirmar.', 'Fuente: ' + story.source_url].join('\n\n');
+}
+
 // Adapt only approved text. No additional LLM call or claim of full-article verification.
 export function socialKit(story) {
   const e = typeof story.editorial === 'string' ? JSON.parse(story.editorial) : story.editorial;
@@ -34,7 +39,7 @@ export function socialKit(story) {
     title,x:xPublication(story),...(e.marketSnapshot?{marketSnapshot:e.marketSnapshot}:{}),...(artDirection(story).faceoff?{mediaCredits:portraitCredits}:{}),
     hooks:[{type:'directo',text:title},{type:'contexto',text:'El contexto de este anuncio: '+title},{type:'pregunta',text:'¿Qué cambia con este anuncio? '+title}],
     slides,instagram:{width:1080,height:1350,caption:[title,context,'¿Qué dato te falta para entender mejor esta noticia?','Fuente: '+story.source_url].join('\n\n')},
-    tiktok:{width:1080,height:1920,caption:[title,'Qué pasó y qué falta por confirmar.','Fuente: '+story.source_url].join('\n\n')},
+    tiktok:{width:1080,height:1920,caption:tiktokCaption(story)},
     video:{state:'script-only',width:1080,height:1920,beats,wordCount:words,
       estimatedSeconds:Math.ceil(words/140*60),timingBasis:'Estimación de lectura a 140 palabras/minuto; no audio sincronizado.',
       needsEdit:words>105,voice:'Pendiente de grabación o de elegir una voz con cuota gratuita verificada.'}};
