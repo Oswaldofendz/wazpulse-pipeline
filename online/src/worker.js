@@ -24,7 +24,7 @@ export default {
     const path = new URL(request.url).pathname;
     if(path==='/share/x'||path.startsWith('/share/x/'))return shareXRequest(request,env);
     if (path === '/health' && request.method === 'GET') {
-      return json({service: 'wacapital-online', version: '0.4.0', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
+      return json({service: 'wacapital-online', version: '0.4.1', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
     }
     if (path === '/telegram/webhook' && request.method === 'POST') {
       if (!await secretMatches(request.headers.get('X-Telegram-Bot-Api-Secret-Token'), env.TELEGRAM_WEBHOOK_SECRET)) return json({error: 'Unauthorized'}, 401);
@@ -55,7 +55,10 @@ export default {
           const row=await store(env.DB).first("SELECT value FROM runtime WHERE key='share_x_last_error'");
           return json({lastError:row?JSON.parse(row.value):null});
         }
-        if (path === '/admin/tick' && request.method === 'POST') return json(await pipeline.tick());
+        if (path === '/admin/tick' && request.method === 'POST') {
+          const collect = new URL(request.url).searchParams.get('collect') !== 'false';
+          return json(await pipeline.tick({collect}));
+        }
         if (path === '/admin/media-step' && request.method === 'POST') return json(await createMedia(env).step());
         if (path === '/admin/channel-step' && request.method === 'POST') return json(await createChannels(env).step());
         if (path === '/admin/channel-status' && request.method === 'GET') {

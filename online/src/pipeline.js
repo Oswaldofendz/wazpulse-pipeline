@@ -4,6 +4,7 @@ import {network, telegram, ServiceError} from './io.js';
 import {createMedia} from './media.js';
 import {createChannels, newsCard, newsButtons} from './channels.js';
 import {createFast} from './fast.js';
+import {FAST_EDITORIAL_PROVIDER} from './fast-editorial.js';
 
 const enabled = value => value === 'true';
 const boundedInt = (value, fallback, max) => {
@@ -35,14 +36,15 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
       if(fast) {
         const claim=await db.first("UPDATE stories SET notification='sending' WHERE id=? AND state='ready' AND notification='sent' RETURNING id",id);
         if(!claim)return false;
-        try {await bot.edit(fast.message_id,newsCard(fast),newsButtons(id));await db.notified(id,Number(fast.message_id));return true;}
+        try {await bot.edit(fast.message_id,newsCard(fast),newsButtons(id,fast.source_url));await db.notified(id,Number(fast.message_id));return true;}
         catch {await db.uncertain(id);return false;}
       }
     }
     const story = await db.notification(id, force);
     if (!story) return false;
     try {
-      const result = await bot.send(newsCard(story), newsButtons(story.id));
+      const source = JSON.parse(story.editorial).provider === FAST_EDITORIAL_PROVIDER ? story.source_url : null;
+      const result = await bot.send(newsCard(story), newsButtons(story.id, source));
       if (!Number.isSafeInteger(result?.message_id)) throw new Error('Missing message ID');
       await db.notified(story.id, result.message_id);
       return true;

@@ -21,7 +21,7 @@ intervalo de recopilación no resolvía esos tres problemas.
 | Euro Stoxx 50 y Nikkei | Un minuto durante su sesión local | Misma validación de frescura; se descartan datos demorados |
 | Oro y WTI futuros | Dos minutos, con pausa de mantenimiento | Solo se aceptan datos válidos y recientes |
 | VIX | Un minuto durante sesión estadounidense | Se interpreta una subida como riesgo |
-| Fed, BCE, CNBC, CoinDesk, BBC World y BBC Mundo | Cada fuente, dos minutos; tres fuentes por minuto | Titular original y enlace inmediato; revisión española después |
+| Fed, BCE, CNBC, CoinDesk, BBC World y BBC Mundo | Cada fuente, dos minutos; tres fuentes por minuto | Titular en español, enlace y botones por red |
 | Redacción de noticias | Cada dos minutos, salvo mantenimiento o prioridad de un aviso | Una llamada por ciclo, con el mismo máximo diario de seis |
 | Recopilación de WaStake | Diez minutos | Sigue complementando las entradas directas |
 | Preparación de imágenes | Alterna con redacción, cuando no hay un aviso urgente | Se conservan el formato elegido, la aprobación y los límites anteriores |
@@ -46,9 +46,11 @@ conservan para la siguiente. Un tema repetido se silencia veinte minutos.
 
 - Una alerta numérica no necesita IA editorial. Incluye cifras observadas y
   permite elegir X, Instagram o TikTok mediante los botones existentes.
-- Una alerta de fuente llega primero con su titular original y enlace. Cuando
-  hay cupo de redacción se edita **ese mismo mensaje** con la revisión española
-  y los botones. Si no hay cupo se indica claramente que está pendiente.
+- Desde el 6 de noviembre, una alerta de fuente incluye el titular en español,
+  el enlace y los botones de revisión desde el primer mensaje. Se traduce con
+  Workers AI, con hasta 24 intentos diarios aparte de las seis llamadas a
+  WaStake. Las fuentes en español pasan directamente a revisión. Una traducción
+  fallida se reintenta en una consulta posterior mientras la noticia siga vigente.
 - Aprobar para X permite preparar una sola portada. Los gráficos usan el
   corte de datos almacenado en esa noticia, muestran fuente y hora UTC y no
   llaman a ningún generador de imágenes. Las bajadas usan la composición roja.

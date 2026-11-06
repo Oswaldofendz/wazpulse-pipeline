@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createFast} from '../src/fast.js';
+import {fastEditorial} from '../src/fast-editorial.js';
 import {MARKET_ASSETS,marketOpen,quoteFromYahoo,appendQuote,marketTrigger,marketEditorial} from '../src/fast-market.js';
 import {FAST_FEEDS,parseFeed,fastTopic} from '../src/fast-feeds.js';
 import {marketGraph,CHART_PIXEL} from '../src/market-graph.js';
@@ -18,6 +19,18 @@ const xml=(feed,id,title,at)=>'<rss><channel><item><title><![CDATA['+title+']]><
 function fixture(overrides={}) {
   const s=setup({FAST_ENABLED:'true',FAST_ALERTS_ENABLED:'true',DAILY_FAST_LIMIT:'6',FAST_REQUEST_LIMIT:'12000',MEDIA_ENABLED:'true',...overrides});
   const state={clock:NOW,prices:{},previous:{},calls:[],messages:[],edits:[],headlines:{},lose:false,confirmationMismatch:false,stale:false,badQuote:false,http429:false,news:false,rendered:0,uploads:0};
+  const translations = {
+    'Federal Reserve issues FOMC statement': 'La Reserva Federal publica el comunicado del FOMC',
+    'Emergency rate cut after bank failure': 'Recorte de emergencia de tipos tras la quiebra de un banco',
+    'Coinbase exchange confirms major hack': 'Coinbase confirma un grave ataque a la plataforma',
+    'Iran launches attacks in Strait of Hormuz': 'Irán lanza ataques en el estrecho de Ormuz'
+  };
+  state.translationCalls = [];
+  s.env.AI ??= {async run(_model, input) {
+    const title = input.messages[1].content;
+    state.translationCalls.push(title);
+    return {response: state.translationOverride ?? translations[title]};
+  }};
   const fetcher=async(url,options={})=>{
     state.calls.push({url,options});
     if(url.includes('query1.finance.yahoo.com')) {
@@ -27,6 +40,7 @@ function fixture(overrides={}) {
       return Response.json(raw(asset,state.prices[symbol]||100,state.clock-(state.stale?10*60_000:0),state.previous[symbol]||100));
     }
     const f=FAST_FEEDS.find(f=>f.url===url);
+    if (f && state.unchangedFeed && new Headers(options.headers).has('If-None-Match')) return new Response(null, {status: 304});
     if(f) return new Response(xml(f,'baseline-'+f.id,'Ordinary source update',NOW-600_000)+(state.headlines[f.id]?[state.headlines[f.id]].flat().map((title,i)=>xml(f,'new-'+f.id+'-'+i,title,state.clock-30_000)).join(''):'')+
       (state.news&&f.id==='fed'?'<item><title>Federal Reserve issues FOMC statement</title><link>'+articleUrl(f,'new-decision')+'</link><pubDate>'+new Date(state.clock-30_000).toUTCString()+'</pubDate></item>':''),{headers:{ETag:'test-etag'}});
     if(url.startsWith('https://api.exchange.coinbase.com/products/')) {
@@ -43,6 +57,7 @@ function fixture(overrides={}) {
       return Response.json({ok:true,result:{message_id:900+state.messages.length}});
     }
     if(url.endsWith('/editMessageText')) {state.edits.push(JSON.parse(options.body));return Response.json({ok:true,result:{message_id:901}});}
+    if(url.endsWith('/answerCallbackQuery'))return Response.json({ok:true,result:true});
     if(url.endsWith('/sendDocument')) {state.uploads++;return Response.json({ok:true,result:{message_id:999,document:{file_id:'exact-chart'}}});}
     if(url.endsWith('/api/analysis/news-angle')||url.endsWith('/api/market/impact-alerts'))return s.fetcher(url,options);
     throw Error('No Render/news/paid provider allowed here');
@@ -99,7 +114,7 @@ test('a second urgent headline from the same source remains available on the nex
   s.fastState.headlines={fed:['Federal Reserve issues FOMC statement','Emergency rate cut after bank failure']};
   await s.fast.tick();assert.equal(s.fastState.messages.length,1);
   s.fastState.clock+=120_000;await s.fast.tick();assert.equal(s.fastState.messages.length,2);
-  assert.match(s.fastState.messages[1].text,/Emergency rate/);
+  assert.match(s.fastState.messages[1].text,/Recorte de emergencia/);
 });
 
 test('a broad sell-off is not repeated for crypto already covered, but a fresh additional shock can alert',async()=>{
@@ -211,24 +226,57 @@ test('shadow mode collects observations but never sends alerts or consumes edito
   assert.equal(s.db.native.prepare('SELECT COUNT(*) AS n FROM daily_budget').get().n,0);
   assert.equal(s.db.native.prepare('SELECT COUNT(*) AS n FROM visual_budget').get().n,0);
 });
-test('new urgent RSS headline arrives first, then editorial updates that exact message without another alert',async()=>{
+test('repairing a legacy English review edits the same Telegram message and exposes the platform buttons',async()=>{
   const s=fixture();await s.fast.tick();s.fastState.clock+=120000;s.fastState.news=true;
-  await s.fast.tick();assert.equal(s.fastState.messages.length,1);assert.match(s.fastState.messages[0].text,/Titular original/);
-  const before=s.db.native.prepare('SELECT * FROM stories').get();assert.equal(before.state,'new');assert.equal(before.notification,'sent');
+  await s.fast.tick();
+  const before=s.db.native.prepare('SELECT * FROM stories').get();
+  s.db.native.prepare("UPDATE stories SET state='ready', editorial=? WHERE id=?").run(
+    JSON.stringify(fastEditorial('La Reserva Federal publica su comunicado', before.source)), before.id);
   const pipeline=createPipeline(s.env,{fetcher:s.fetcher,now:()=>s.fastState.clock});
   await pipeline.tick({collect:false});
   const after=s.db.native.prepare('SELECT * FROM stories').get();assert.equal(after.state,'pending');
   assert.equal(s.fastState.edits.length,1);assert.equal(s.fastState.edits[0].message_id,Number(before.message_id));
+  assert.ok(s.fastState.edits[0].reply_markup.inline_keyboard.flat().some(button=>button.callback_data==='pickx:'+before.id));
   assert.equal(s.fastState.messages.length,1);assert.equal(s.fastState.calls.some(c=>c.url.endsWith('/api/market/impact-alerts')),false);
 });
-test('direct source alerts can arrive with the editorial budget exhausted and preserve human approval',async()=>{
+test('the first RSS message is Spanish and its X button works with the editorial budget exhausted',async()=>{
   const s=fixture();s.db.native.prepare('INSERT INTO daily_budget(day,used) VALUES(?,6)').run('2026-11-05');
   await s.fast.tick();s.fastState.clock+=120000;s.fastState.news=true;await s.fast.tick();
   assert.equal(s.fastState.messages.length,1);
+  const card = s.fastState.messages[0];
+  assert.match(card.text,/La Reserva Federal publica el comunicado del FOMC/);
+  assert.doesNotMatch(card.text,/Federal Reserve issues|pendiente de cupo/);
+  const story = s.db.native.prepare('SELECT * FROM stories').get();
+  const buttons = card.reply_markup.inline_keyboard.flat();
+  for (const action of ['pickx','picki','pickt','reject']) {
+    assert.ok(buttons.some(button=>button.callback_data===action+':'+story.id),action);
+  }
+  assert.ok(buttons.some(button=>button.url===story.source_url));
+  assert.equal(story.state,'pending');
   const p=createPipeline(s.env,{fetcher:s.fetcher,now:()=>s.fastState.clock});await p.tick({collect:false});
-  assert.equal(s.db.native.prepare('SELECT used FROM daily_budget').get().used,6);
-  assert.equal(s.db.native.prepare('SELECT state FROM stories').get().state,'new');
+  assert.equal(s.db.native.prepare('SELECT used FROM daily_budget WHERE day=?').get('2026-11-05').used,6);
   assert.equal(s.fastState.calls.some(c=>c.url.endsWith('/api/analysis/news-angle')),false);
+  assert.equal(s.fastState.edits.length,0);
+  await p.handleUpdate({callback_query:{
+    id:'test-x',from:{id:123},message:{message_id:Number(story.message_id),chat:{id:123}},data:'pickx:'+story.id
+  }});
+  assert.equal(s.db.native.prepare('SELECT state FROM channel_jobs').get().state,'draft');
+  assert.match(s.fastState.messages[1].text,/Borrador · Twitter\/X/);
+  assert.equal(s.fastState.uploads,0);
+});
+test('a failed translation stays unseen and is retried against a normally conditional RSS',async()=>{
+  const s=fixture();await s.fast.tick();s.fastState.clock+=120000;s.fastState.news=true;
+  s.fastState.translationOverride = 'Federal Reserve issues FOMC statement';
+  const result = await s.fast.tick();
+  assert.equal(result.feeds.find(f=>f.source==='fed').state,'translation-pending');
+  assert.equal(s.fastState.messages.length,0);
+  assert.equal((await s.fast.status()).budget.alerts_used,0);
+  s.fastState.translationOverride = null;
+  s.fastState.unchangedFeed = true;
+  s.fastState.clock+=120000;
+  await s.fast.tick();
+  assert.equal(s.fastState.messages.length,1);
+  assert.equal(s.fastState.translationCalls.length,2);
 });
 test('normal editorials leave two calls available for urgent stories without raising the six-call total',async()=>{
   const s=fixture();s.db.native.prepare('INSERT INTO daily_budget(day,used) VALUES(?,4)').run('2026-11-05');
@@ -269,7 +317,7 @@ test('market alerts leave budget for genuinely new source announcements',async()
   const s=fixture();await warm(s);s.db.native.prepare("UPDATE fast_budget SET alerts_used=4 WHERE day='2026-11-05'").run();
   s.fastState.clock+=60000;s.fastState.prices['BTC-USD']=96;s.fastState.news=true;
   const result=await s.fast.tick();assert.equal(result.prices.state,'alert-limit');
-  assert.equal(s.fastState.messages.length,1);assert.match(s.fastState.messages[0].text,/Titular original/);
+  assert.equal(s.fastState.messages.length,1);assert.match(s.fastState.messages[0].text,/La Reserva Federal/);
   assert.equal(s.db.native.prepare('SELECT alerts_used FROM fast_budget').get().alerts_used,5);
 });
 test('overlapping fast ticks share a durable lock and cannot double polling or alerts',async()=>{

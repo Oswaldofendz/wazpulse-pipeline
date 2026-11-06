@@ -3,9 +3,11 @@ export function store(db) {
   const first = (sql, ...args) => statement(sql, args).first();
   const run = (sql, ...args) => statement(sql, args).run();
   const all = async (sql, ...args) => (await statement(sql, args).all()).results;
-  const insertStatement=(story,now)=>statement(
-    'INSERT OR IGNORE INTO stories(id,event_key,title,source,source_url,published_at,priority,snippet,assets,created_at) SELECT ?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM stories WHERE source_url=?)',
-    [story.id,story.eventKey,story.title,story.source,story.url,story.published,story.priority,story.snippet,JSON.stringify(story.assets),now,story.url]);
+  const insertStatement = (story, now, editorial) => statement(
+    'INSERT OR IGNORE INTO stories(id,event_key,title,source,source_url,published_at,priority,snippet,assets,created_at,state,editorial) SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM stories WHERE source_url=?)',
+    [story.id, story.eventKey, story.title, story.source, story.url, story.published, story.priority,
+      story.snippet, JSON.stringify(story.assets), now, editorial ? 'ready' : 'new',
+      editorial ? JSON.stringify(editorial) : null, story.url]);
   return {
     first, run, all,
     async lock(name, owner, now, ttl) {
@@ -19,8 +21,8 @@ export function store(db) {
       await run('INSERT OR IGNORE INTO daily_budget(day,used) VALUES(?,0)', day);
       return Boolean(await first('UPDATE daily_budget SET used=used+1 WHERE day=? AND used<? RETURNING used', day, limit));
     },
-    async insert(story, now) {
-      return insertStatement(story,now).run();
+    async insert(story, now, editorial) {
+      return insertStatement(story, now, editorial).run();
     },
     async insertMany(stories,now) {
       if(!stories.length)return 0;

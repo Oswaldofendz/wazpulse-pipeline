@@ -5,6 +5,7 @@ import {socialKit, socialHtml, socialDimensions} from './social.js';
 import {createImages} from './image-providers.js';
 import {createStorage} from './storage.js';
 import {shareXUrl,xButtons} from './share-x.js';
+import {FAST_EDITORIAL_PROVIDER} from './fast-editorial.js';
 
 const platforms={x:'Twitter/X',i:'Instagram',t:'TikTok'};
 const names={x:'x',i:'instagram',t:'tiktok'};
@@ -12,11 +13,16 @@ const codes={x:'x',instagram:'i',tiktok:'t'};
 export function newsCard(story) {
   const e=JSON.parse(story.editorial);
   const date=new Date(story.published_at).toLocaleDateString('es-ES',{timeZone:'UTC',day:'2-digit',month:'short'});
+  if (e.provider === FAST_EDITORIAL_PROVIDER) {
+    const time = new Date(story.published_at).toISOString().slice(11, 16);
+    return ['🚨 ÚLTIMA HORA · ' + story.source, e.headline, date + ' · ' + time + ' UTC'].join('\n\n');
+  }
   return ['📰 '+e.headline,story.source+' · '+date+(e.marketSnapshot?' · '+new Date(e.marketSnapshot.at).toISOString().slice(11,16)+' UTC':'')].join('\n\n');
 }
-export function newsButtons(id) {
+export function newsButtons(id, sourceUrl) {
   return {inline_keyboard:[[{text:'Aprobar para Twitter/X',callback_data:'pickx:'+id}],
     [{text:'Aprobar para TikTok',callback_data:'pickt:'+id},{text:'Aprobar para Instagram',callback_data:'picki:'+id}],
+    ...(sourceUrl ? [[{text:'Ver fuente',url:sourceUrl}]] : []),
     [{text:'Descartar',callback_data:'reject:'+id}]]};
 }
 function draftText(story,platform) {

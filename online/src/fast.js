@@ -4,6 +4,7 @@ import {readBounded,network,telegram,ServiceError} from './io.js';
 import {newsCard,newsButtons} from './channels.js';
 import {MARKET_ASSETS,marketOpen,quoteFromYahoo,appendQuote,marketTrigger,marketEditorial,pct} from './fast-market.js';
 import {FAST_FEEDS,parseFeed,fastTopic} from './fast-feeds.js';
+import {fastEditorial, translateFastHeadline} from './fast-editorial.js';
 
 const DAY=86_400_000;
 const integer=(value,fallback,max)=>/^\d+$/.test(String(value))&&Number(value)<=max?Number(value):fallback;
@@ -12,7 +13,7 @@ export function createFast(env,{fetcher=fetch,now=Date.now}={}) {
   const db=store(env.DB),bot=telegram(env,network(fetcher));
   const enabled=()=>env.PIPELINE_ENABLED==='true'&&env.FAST_ENABLED==='true';
   const notifying=()=>env.FAST_ALERTS_ENABLED==='true'&&env.TELEGRAM_BOT_TOKEN&&env.TELEGRAM_CHAT_ID;
-  let cached=null,loading=null,budgetReady=null,editorialBudget=null,requestQueue=[],requestScheduled=false;
+  let cached=null,loading=null,budgetReady=null,requestQueue=[],requestScheduled=false;
   let batchChain=Promise.resolve();
   const batch=statements=>{const task=batchChain.then(()=>env.DB.batch(statements));batchChain=task.catch(()=>{});return task;};
   const dirty=new Map();
@@ -164,62 +165,96 @@ export function createFast(env,{fetcher=fetch,now=Date.now}={}) {
       currency:'USD',source:'Coinbase',basis:'24h-ref',referenceAt:ref.at,url:'https://www.coinbase.com/price/'+(asset.symbol==='BTC-USD'?'bitcoin':'ethereum')};
   }
   async function feed(feed) {
-    const primed=await value('fast_feed_primed:'+feed.id);
-    const r=await get(feed.url,'feed:'+feed.id,{json:false,conditional:Boolean(primed)});
-    if(r.state!=='ok')return {source:feed.id,state:r.state};
-    const items=parseFeed(r.data,feed,now());
-    if(!items.length)return {source:feed.id,state:'empty-or-invalid'};
-    const known=await db.all('SELECT url FROM fast_seen WHERE url IN ('+items.map(()=>'?').join(',')+')',...items.map(a=>a.url));
-    const seenUrls=new Set(known.map(r=>r.url)),completed=[];
-    let sent=0,attempts=0;
+    const primed = await value('fast_feed_primed:' + feed.id);
+    const httpKey = 'fast_http:feed:' + feed.id;
+    const response = await get(feed.url, 'feed:' + feed.id, {json: false, conditional: Boolean(primed)});
+    if (response.state !== 'ok') return {source: feed.id, state: response.state};
+    const items = parseFeed(response.data, feed, now());
+    if (!items.length) return {source: feed.id, state: 'empty-or-invalid'};
+    const known = await db.all('SELECT url FROM fast_seen WHERE url IN (' + items.map(() => '?').join(',') + ')', ...items.map(a => a.url));
+    const seenUrls = new Set(known.map(row => row.url));
+    const completed = [];
+    let sent = 0, attempts = 0;
+    let state = primed ? 'checked' : 'primed';
     try {
-    for(const article of items) {
-      const seen=seenUrls.has(article.url);
-      if(!seen)completed.push(article);
-      // Baseline existing feed entries on first contact; never flood old news.
-      if(!primed||seen||article.published<now()-20*60_000)continue;
-      const topic=fastTopic(article,feed);if(!topic)continue;
-      const last=await value('fast_alert:news:'+topic);
-      if(last&&now()-last.at<20*60_000)continue;
-      if(!notifying())continue;
-      const normalized=await normalizeStory({title:article.title,url:article.url,publishedAt:new Date(article.published).toISOString(),source:article.source,priority:100,snippet:article.snippet,explicitAssets:[]},now());
-      if(!normalized)continue;
-      const capacity=await db.first('SELECT COUNT(*) AS n,EXISTS(SELECT 1 FROM stories WHERE source_url=?) AS existing FROM stories',normalized.url);if(capacity.existing)continue;
-      if(capacity.n>=5000)return {source:feed.id,state:'story-cap'};
-      if(!await reserveAlert('news'))return {source:feed.id,state:'alert-limit'};
-      const cooldown={at:now(),id:normalized.id};
-      const claimedTopic=await db.first("INSERT INTO runtime(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE CAST(json_extract(runtime.value,'$.at') AS INTEGER)<=? RETURNING key",'fast_alert:news:'+topic,JSON.stringify(cooldown),now()-20*60_000);
-      if(!claimedTopic)continue;
-      await db.insert(normalized,now());
-      await db.run("INSERT OR IGNORE INTO fast_events(story_id,kind,topic,detected_at,published_at,detail) VALUES(?,'news',?,?,?,?)",normalized.id,topic,now(),article.published,JSON.stringify({source:feed.id,basis:'source-headline',language:feed.id==='bbc-es'?'es':'original'}));
-      await setValue('fast_alert:news:'+topic,cooldown);
-      const claimed=await db.first("UPDATE stories SET notification='sending' WHERE id=? AND state='new' AND notification='new' RETURNING id",normalized.id);
-      if(!claimed)continue;
-      attempts++;
-      await flush();
-      try {
-        const clock=new Date(article.published).toISOString().slice(11,16);
-        const budget=await(editorialBudget||(editorialBudget=db.first('SELECT used FROM daily_budget WHERE day=?',day())));
-        const canEdit=env.AI_ENABLED==='true'&&(budget?.used||0)<integer(env.DAILY_LLM_LIMIT,6,16);
-        const text='🚨 ÚLTIMA HORA · '+feed.name+'\n\n'+article.title+'\n\nFuente: '+clock+' UTC · Titular original. '+
-          (canEdit?'Preparando la revisión en español.':'Redacción en español pendiente de cupo.');
-        const message=await bot.send(text,{inline_keyboard:[[{text:'Ver fuente',url:article.url}]]});
-        if(!Number.isSafeInteger(message?.message_id))throw new ServiceError('telegram-alert');
-        await batch([env.DB.prepare("UPDATE stories SET notification='sent',message_id=? WHERE id=?").bind(String(message.message_id),normalized.id),env.DB.prepare('UPDATE fast_events SET delivered_at=? WHERE story_id=?').bind(now(),normalized.id)]);sent++;
-      }catch {await db.uncertain(normalized.id);}
-      // One fresh announcement per source and cycle; leave the remainder
-      // unseen for its next check instead of dropping a burst of headlines.
-      break;
+      for (const article of items) {
+        if (seenUrls.has(article.url)) continue;
+        completed.push(article.url);
+        if (!primed || !notifying() || article.published < now() - 20 * 60_000) continue;
+        const topic = fastTopic(article, feed);
+        if (!topic) continue;
+        const last = await value('fast_alert:news:' + topic);
+        if (last && now() - last.at < 20 * 60_000) continue;
+
+        const story = await normalizeStory({
+          title: article.title, url: article.url, publishedAt: new Date(article.published).toISOString(),
+          source: article.source, priority: 100, snippet: article.snippet, explicitAssets: []
+        }, now());
+        if (!story) continue;
+        const capacity = await db.first(
+          'SELECT COUNT(*) AS n, EXISTS(SELECT 1 FROM stories WHERE source_url=?) AS existing, (SELECT alerts_used FROM fast_budget WHERE day=?) AS used FROM stories',
+          story.url, day()
+        );
+        if (capacity.existing) continue;
+        if (capacity.n >= 5000) return {source: feed.id, state: 'story-cap'};
+        if (capacity.used >= integer(env.DAILY_FAST_LIMIT, 12, 24)) return {source: feed.id, state: 'alert-limit'};
+
+        // Force the next RSS check to include its body. An unchanged response
+        // would otherwise hide a deferred translation or a second headline.
+        await setValue(httpKey, {...await value(httpKey), etag: '', modified: ''});
+        const headline = feed.id === 'bbc-es' ? story.title : await translateFastHeadline(env, db, story.title, now());
+        if (!headline) {
+          completed.pop();
+          state = 'translation-pending';
+          break;
+        }
+        if (!await reserveAlert('news')) return {source: feed.id, state: 'alert-limit'};
+        const cooldown = {at: now(), id: story.id};
+        const claimedTopic = await db.first(
+          "INSERT INTO runtime(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE CAST(json_extract(runtime.value,'$.at') AS INTEGER)<=? RETURNING key",
+          'fast_alert:news:' + topic, JSON.stringify(cooldown), now() - 20 * 60_000
+        );
+        if (!claimedTopic) break;
+        const saved = await db.insert(story, now(), fastEditorial(headline, story.source));
+        if (!saved.meta?.changes) break;
+        await db.run(
+          "INSERT INTO fast_events(story_id,kind,topic,detected_at,published_at,detail) VALUES(?,'news',?,?,?,?)",
+          story.id, topic, now(), article.published,
+          JSON.stringify({source: feed.id, basis: 'source-headline', language: 'es'})
+        );
+        await setValue('fast_alert:news:' + topic, cooldown);
+        const claimed = await db.notification(story.id);
+        if (!claimed) break;
+        attempts++;
+        await flush();
+        try {
+          const message = await bot.send(newsCard(claimed), newsButtons(story.id, story.url));
+          if (!Number.isSafeInteger(message?.message_id)) throw new ServiceError('telegram-alert');
+          await batch([
+            env.DB.prepare("UPDATE stories SET state='pending',notification='sent',message_id=? WHERE id=?")
+              .bind(String(message.message_id), story.id),
+            env.DB.prepare('UPDATE fast_events SET delivered_at=? WHERE story_id=?').bind(now(), story.id)
+          ]);
+          sent++;
+        } catch {
+          await db.uncertain(story.id);
+        }
+        break;
+      }
+    } finally {
+      if (completed.length) {
+        await batch(completed.map(url => env.DB.prepare('INSERT OR IGNORE INTO fast_seen(url,seen_at) VALUES(?,?)')
+          .bind(url, now())));
+      }
     }
-    }finally{if(completed.length)await batch(completed.map(a=>env.DB.prepare('INSERT OR IGNORE INTO fast_seen(url,seen_at) VALUES(?,?)').bind(a.url,now())));}
-    if(!primed)await setValue('fast_feed_primed:'+feed.id,{at:now()});
-    return {source:feed.id,state:primed?'checked':'primed',items:items.length,alerts:sent,attempts};
+    if (!primed) await setValue('fast_feed_primed:' + feed.id, {at: now()});
+    return {source: feed.id, state, items: items.length, alerts: sent, attempts};
   }
   async function tick() {
     if(!enabled())return {state:'disabled'};
     const owner=crypto.randomUUID(),instant=now();
     if(!await db.lock('fast',owner,instant,55_000))return {state:'busy'};
-    cached=null;loading=null;budgetReady=null;editorialBudget=null;dirty.clear();
+    cached=null;loading=null;budgetReady=null;dirty.clear();
     const result={at:instant,state:'ok',notifying:Boolean(notifying())};
     try {
       result.prices=await prices();
