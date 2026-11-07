@@ -7,6 +7,8 @@ import {createStorage} from './storage.js';
 import {createChannels} from './channels.js';
 import {shareXRequest} from './share-x.js';
 import {shareTikTokRequest} from './share-tiktok.js';
+import {tiktokAccount, tiktokAuthRequest, tiktokConfigured} from './tiktok-auth.js';
+import {tiktokMediaRequest} from './tiktok-drafts.js';
 import {auditRequest} from './audit.js';
 import {createFast} from './fast.js';
 
@@ -26,9 +28,11 @@ export default {
     const path = new URL(request.url).pathname;
     if(path==='/share/x'||path.startsWith('/share/x/'))return shareXRequest(request,env);
     if(path==='/share/tiktok'||path.startsWith('/share/tiktok/'))return shareTikTokRequest(request,env);
+    if(path.startsWith('/tiktok/media/'))return tiktokMediaRequest(request,env);
+    if(['/tiktok/connect','/tiktok/connect.js','/tiktok/start','/tiktok/callback'].includes(path))return tiktokAuthRequest(request,env);
     if(path==='/auditoria'||path==='/auditoria/app.js')return auditRequest(request);
     if (path === '/health' && request.method === 'GET') {
-      return json({service: 'wacapital-online', version: '0.5.1', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
+      return json({service: 'wacapital-online', version: '0.6.0', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
     }
     if (path === '/telegram/webhook' && request.method === 'POST') {
       if (!await secretMatches(request.headers.get('X-Telegram-Bot-Api-Secret-Token'), env.TELEGRAM_WEBHOOK_SECRET)) return json({error: 'Unauthorized'}, 401);
@@ -51,6 +55,12 @@ export default {
       if (!env.DB) return json({error: 'Database not configured'}, 503);
       try {
         const pipeline = createPipeline(env);
+        if (path === '/admin/tiktok-status' && request.method === 'GET') {
+          const account = await tiktokAccount(env);
+          return json({configured:tiktokConfigured(env),uploadEnabled:env.TIKTOK_UPLOAD_ENABLED==='true',
+            mediaVerified:env.TIKTOK_MEDIA_VERIFIED==='true',connected:Boolean(account && !account.refreshing && account.refreshExpires>Date.now()),
+            uploads:await store(env.DB).all('SELECT story_id,state,error FROM tiktok_uploads ORDER BY created_at DESC LIMIT 5')});
+        }
         if (path === '/admin/status' && request.method === 'GET') return json(await pipeline.status());
         if(path==='/admin/fast-status'&&request.method==='GET')return json(await createFast(env).status());
         if(path==='/admin/fast-tick'&&request.method==='POST')return json(await createFast(env).tick());

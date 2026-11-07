@@ -191,6 +191,9 @@ La construcción con --dry-run no publica ni crea recursos en Cloudflare.
 
 ## Comandos del bot
 
+La carga de carruseles aprobados como borradores de TikTok, su activación
+pendiente y los límites están documentados en [TIKTOK.md](TIKTOK.md).
+
 - /estado: estado del flujo y llamadas editoriales del día.
 - /pendientes: hasta cinco noticias pendientes recientes.
 - /paquetes: últimos cinco paquetes aprobados y estado de su entrega.

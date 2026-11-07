@@ -9,6 +9,7 @@ const routes = {
   'media-step': ['/admin/media-step', 'POST'],
   'channel-status': ['/admin/channel-status', 'GET'],
   'share-x-status': ['/admin/share-x-status', 'GET'],
+  'tiktok-status': ['/admin/tiktok-status', 'GET'],
   'fast-status': ['/admin/fast-status', 'GET'],
   'fast-tick': ['/admin/fast-tick', 'POST'],
   'fast-probe': ['/admin/fast-probe', 'POST'],

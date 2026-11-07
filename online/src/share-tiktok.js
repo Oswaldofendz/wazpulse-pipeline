@@ -2,6 +2,7 @@ import {store} from './store.js';
 import {network, readBounded, telegram} from './io.js';
 import {tiktokCaption} from './social.js';
 import {imageBytes, matchesShareSignature, shareHeaders, shareOrigin, shareSignature, WEEK} from './share-x.js';
+import {pollTikTokDraft, submitTikTokDraft, tiktokDraftStatus} from './tiktok-drafts.js';
 
 const path = '/share/tiktok';
 const pageHeaders = {
@@ -14,7 +15,8 @@ const pageHeaders = {
 async function approvedCarousel(env, id) {
   const db = store(env.DB);
   const story = await db.first(`
-    SELECT s.* FROM stories s JOIN channel_jobs j ON j.story_id = s.id
+    SELECT s.*, (SELECT manifest FROM channel_images WHERE story_id=s.id) AS image_manifest
+    FROM stories s JOIN channel_jobs j ON j.story_id = s.id
     WHERE s.id = ? AND s.state = 'approved' AND j.platform = 'tiktok'
       AND j.state = 'approved' AND j.delivery = 'sent'
   `, id);
@@ -25,7 +27,8 @@ async function approvedCarousel(env, id) {
   `, id);
   if (assets.length !== 5 || assets.some((asset, position) => asset.position !== position ||
       !asset.file_id || !/^[\w-]{1,120}\.png$/i.test(asset.filename))) return null;
-  return {assets, text: tiktokCaption(story)};
+  const kind = story.image_manifest ? JSON.parse(story.image_manifest).art?.mediaKind : null;
+  return {story, assets, text: tiktokCaption(story), isAigc:!['market-chart','official-portraits'].includes(kind)};
 }
 
 function sign(env, id, expires, carousel) {
@@ -55,25 +58,28 @@ async function authorize(request, env, now) {
       !Number.isSafeInteger(expires) || expires <= now || expires > now + WEEK) return null;
   const carousel = await approvedCarousel(env, id);
   if (!carousel || !matchesShareSignature(await sign(env, id, expires, carousel), sig)) return null;
-  return {carousel, position};
+  return {id, carousel, position};
 }
 
-export async function shareTikTokRequest(request, env, {fetcher = fetch, now = Date.now} = {}) {
+export async function shareTikTokRequest(request, env, {fetcher = fetch, now = Date.now, convert, allowStorage} = {}) {
   const route = new URL(request.url).pathname;
   if (route === path && request.method === 'GET') return new Response(page, {headers: pageHeaders});
   if (route === path + '/app.js' && request.method === 'GET') {
     return new Response(client, {headers: {...shareHeaders, 'Content-Type': 'text/javascript; charset=utf-8'}});
   }
-  if (![path + '/data', path + '/image'].includes(route) || request.method !== 'POST') {
+  if (!['/data','/image','/draft','/draft-status'].map(suffix => path+suffix).includes(route) || request.method !== 'POST') {
     return new Response('No encontrado', {status: 404, headers: shareHeaders});
   }
   try {
     const result = await authorize(request, env, now());
     if (!result) return new Response('Enlace no válido o caducado', {status: 401, headers: shareHeaders});
-    const {carousel, position} = result;
+    const {id, carousel, position} = result;
     if (route.endsWith('/data')) {
-      return Response.json({text: carousel.text, filenames: carousel.assets.map(asset => asset.filename)}, {headers: shareHeaders});
+      return Response.json({text: carousel.text, filenames: carousel.assets.map(asset => asset.filename),
+        tiktok:await tiktokDraftStatus(env,id,now(),carousel)}, {headers: shareHeaders});
     }
+    if (route.endsWith('/draft')) return Response.json(await submitTikTokDraft(env,id,carousel,{fetcher,now,convert,allowStorage}),{headers:shareHeaders});
+    if (route.endsWith('/draft-status')) return Response.json(await pollTikTokDraft(env,id,{fetcher,now}),{headers:shareHeaders});
     if (!Number.isInteger(position) || position < 0 || position >= carousel.assets.length) {
       return new Response('Lámina no válida', {status: 400, headers: shareHeaders});
     }
@@ -91,10 +97,12 @@ const page = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta n
 *{box-sizing:border-box}body{margin:0;background:#090f17;color:#eef5fa;font:16px/1.5 system-ui,sans-serif}main{max-width:610px;margin:auto;padding:28px 20px 48px}.brand{color:#80ead0;font-size:.85rem;font-weight:800;letter-spacing:.15em}h1{line-height:1.16;margin:14px 0;font-size:1.85rem}p{color:#c1cdda}button,a.button{display:block;width:100%;min-height:48px;margin:10px 0;padding:12px;border:1px solid #3e556b;border-radius:12px;background:#152638;color:#eef5fa;text-decoration:none;text-align:center;font:inherit;font-weight:650;cursor:pointer}button.primary{border:0;background:#80ead0;color:#0b211d}button:disabled{opacity:.5;cursor:wait}#text{white-space:pre-wrap;overflow-wrap:anywhere;padding:16px;border:1px solid #2b4355;border-radius:12px;background:#142231}#slides{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}img{display:block;width:100%;aspect-ratio:9/16;border-radius:9px;background:#142231}figure{margin:0;text-align:center;font-size:.88rem}figure a{color:#80ead0;display:block;padding:8px 0}details{margin-top:19px}summary{font-weight:650;cursor:pointer}.small{font-size:.875rem}[hidden]{display:none!important}
 </style><script src="/share/tiktok/app.js" defer></script></head><body><main>
 <div class="brand">WACAPITAL</div><h1>Tu carrusel de TikTok</h1>
-<p>Comparte las cinco láminas y el texto desde tu móvil. En TikTok, revisa el orden y la descripción antes de publicar.</p>
+<p id="lead">Prepara las cinco láminas y la descripción para terminar el post en TikTok.</p>
 <div id="status" role="status" aria-live="polite">Cargando el carrusel aprobado…</div><button id="retry" hidden>Volver a cargar</button>
 <section id="material" hidden>
-<button class="primary" id="share" disabled>Compartir con TikTok</button>
+<section id="direct" hidden><p id="account"></p><button class="primary" id="draft">Enviar borrador a TikTok</button><button id="check" hidden>Comprobar envío</button><a class="button" id="openTikTok" href="https://www.tiktok.com/" target="_blank" rel="noreferrer noopener" hidden>Abrir TikTok · ver Bandeja de entrada</a></section>
+<p id="connection" class="small"></p>
+<button id="share" disabled>Compartir desde el móvil</button>
 <button id="copy">Copiar descripción</button><div id="text"></div>
 <h2>Láminas en orden</h2><div id="slides"></div>
 <details id="help"><summary>Guardar y cargar en TikTok</summary>
@@ -110,6 +118,54 @@ const status = get('status');
 const [id, expiry, sig] = location.hash.slice(1).split('.');
 const access = {id, expires: Number(expiry), sig};
 let files = [], urls = [], data;
+let checking = null;
+let checks = 0;
+
+function draftState(result) {
+  const state = result.state;
+  if (data) data.tiktok = {...data.tiktok,...result};
+  get('lead').textContent = ['setup_required','connection_required'].includes(state)
+    ? 'Comparte las cinco láminas y el texto desde tu móvil. Revisa el orden y la descripción en TikTok.'
+    : 'Envía las cinco láminas y la descripción a TikTok para terminar el post en la app.';
+  get('direct').hidden = ['setup_required','connection_required'].includes(state);
+  get('account').textContent = result.account ? 'Cuenta conectada: ' + result.account : get('account').textContent;
+  get('draft').hidden = state !== 'ready';
+  get('check').hidden = !['busy','preparing','submitting','processing','inbox'].includes(state);
+  get('openTikTok').hidden = !['inbox','published','uncertain'].includes(state);
+  const messages = {
+    setup_required:'La carga automática está pendiente de activar la conexión oficial con TikTok. Puedes compartir desde el móvil o guardar las láminas.',
+    connection_required:'Falta conectar o renovar la cuenta. Envía /conectartiktok al bot de Telegram.',
+    ready:'Las cinco láminas y la descripción se enviarán como borrador. En TikTok, abre la notificación de la Bandeja de entrada para editar y publicar.',
+    busy:'La conexión de TikTok está atendiendo otro envío. Comprueba el estado en unos segundos.',
+    preparing:'Preparando las cinco láminas para TikTok. El envío ya está en curso.',
+    submitting:'Enviando el borrador a TikTok…',
+    processing:'TikTok está procesando las cinco láminas. Puedes comprobar el envío sin cargarlo otra vez.',
+    inbox:'TikTok confirmó la entrega. Abre la app → Bandeja de entrada → notificación del borrador para continuar con las láminas y la descripción cargadas.',
+    published:'TikTok indica que este material ya se publicó desde su app. Puedes revisar la publicación en tu cuenta.',
+    uncertain:'No se pudo confirmar el envío. Revisa la Bandeja de entrada de TikTok antes de cargarlo manualmente.',
+    failed:'TikTok no pudo preparar este borrador. Puedes usar las láminas y la descripción de abajo.',
+    account_changed:'Este borrador corresponde a otra conexión de TikTok. Comprueba la cuenta antes de continuar.',
+    material_changed:'Este material cambió después del envío. Comprueba el borrador anterior en TikTok antes de cargar una nueva versión.',
+    daily_limit:'Se alcanzó el límite de cinco envíos en 24 horas. Puedes usar la carga desde el móvil.',
+    caption_too_long:'La descripción supera el límite de TikTok. Revisa el texto antes de cargarlo.'
+  };
+  get('connection').textContent = messages[state] || 'Comprueba el estado del borrador en TikTok.';
+  if (['busy','preparing','submitting','processing','inbox','published','uncertain','failed','account_changed','material_changed'].includes(state)) {
+    status.textContent = state==='inbox' ? 'Borrador recibido en TikTok.' : state==='published' ? 'Publicación confirmada por TikTok.' : 'Estado del envío: ' + ({busy:'esperando',preparing:'preparando',submitting:'enviando',processing:'procesando',uncertain:'pendiente de comprobar',failed:'interrumpido',account_changed:'comprueba la cuenta',material_changed:'material modificado'}[state]);
+  }
+  if (result.error === 'url_ownership_unverified') get('connection').textContent = 'TikTok pide verificar el dominio de las imágenes. Mientras se completa, puedes usar la carga desde el móvil.';
+  if (result.error === 'spam_risk_too_many_pending_share') get('connection').textContent = 'TikTok tiene demasiados borradores pendientes. Termina uno desde la Bandeja de entrada antes de enviar otro.';
+  if (result.error === 'access_token_invalid' || result.error === 'scope_not_authorized') get('connection').textContent = 'TikTok pide renovar el permiso. Envía /conectartiktok al bot de Telegram.';
+  clearTimeout(checking);
+  if (['busy','preparing','submitting','processing'].includes(state) && !document.hidden && checks<12) checking = setTimeout(checkDraft, 10_000);
+}
+async function checkDraft() {
+  checks++;
+  get('check').disabled = true;
+  try { draftState(await (await loadResource('draft-status')).json()); }
+  catch { get('connection').textContent = 'No se pudo comprobar. Vuelve a pulsar Comprobar envío.'; }
+  finally { get('check').disabled = false; }
+}
 
 async function loadResource(name, extra = {}) {
   const response = await fetch('/share/tiktok/' + name, {
@@ -140,10 +196,12 @@ async function load() {
   files = [];
   urls = [];
   data = null;
+  clearTimeout(checking);
   enableSharing();
   status.textContent = 'Cargando el carrusel aprobado…';
   try {
     data = await (await loadResource('data')).json();
+    draftState(data.tiktok);
     get('text').textContent = data.text;
     get('material').hidden = false;
     files = await Promise.all(data.filenames.map(async (filename, position) => {
@@ -169,6 +227,7 @@ async function load() {
       status.textContent = 'Guarda las láminas aquí o abre esta página en Safari o Chrome para compartirlas juntas.';
       get('help').open = true;
     }
+    draftState(data.tiktok);
   } catch (error) {
     status.textContent = error.message;
     get('retry').hidden = false;
@@ -192,6 +251,18 @@ async function share(withText) {
 }
 
 get('share').addEventListener('click', () => share(true));
+get('draft').addEventListener('click', async () => {
+  get('draft').disabled = true;
+  get('connection').textContent = 'Preparando y enviando el borrador a TikTok…';
+  try { draftState(await (await loadResource('draft')).json()); }
+  catch {
+    get('draft').hidden = true;
+    get('check').hidden = false;
+    get('connection').textContent = 'La conexión se interrumpió. Pulsa Comprobar envío para conocer el resultado.';
+  } finally { get('draft').disabled = false; }
+});
+get('check').addEventListener('click', checkDraft);
+document.addEventListener('visibilitychange', () => { if (document.hidden) clearTimeout(checking); });
 get('photos').addEventListener('click', () => share(false));
 get('retry').addEventListener('click', load);
 get('copy').addEventListener('click', async () => {

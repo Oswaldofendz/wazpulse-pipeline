@@ -13,6 +13,7 @@ export function database() {
   native.exec(readFileSync(new URL('../media-schema.sql', import.meta.url), 'utf8'));
   native.exec(readFileSync(new URL('../platform-schema.sql', import.meta.url), 'utf8'));
   native.exec(readFileSync(new URL('../fast-schema.sql', import.meta.url), 'utf8'));
+  native.exec(readFileSync(new URL('../tiktok-schema.sql', import.meta.url), 'utf8'));
   return {
     native,
     async batch(statements) {

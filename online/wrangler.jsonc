@@ -22,7 +22,9 @@
     "FAST_ENABLED": "false",
     "FAST_ALERTS_ENABLED": "false",
     "DAILY_FAST_LIMIT": "12",
-    "FAST_REQUEST_LIMIT": "12000"
+    "FAST_REQUEST_LIMIT": "12000",
+    "TIKTOK_UPLOAD_ENABLED": "false",
+    "TIKTOK_MEDIA_VERIFIED": "false"
   }
   // Before deployment, add a real D1 binding named DB using the ID returned
   // by Cloudflare. No account/database identifier is fabricated here.

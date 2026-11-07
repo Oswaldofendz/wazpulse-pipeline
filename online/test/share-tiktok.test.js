@@ -40,7 +40,7 @@ test('TikTok shares the approved caption and the exact five ordered PNGs',async(
   assert.equal(metadata.status,200);
   assert.equal(metadata.headers.get('Cache-Control'),'private, no-store');
   const caption=tiktokCaption(s.db.native.prepare('SELECT * FROM stories').get());
-  assert.deepEqual(await metadata.json(),{text:caption,filenames:[1,2,3,4,5].map(i=>'slide-'+i+'.png')});
+  assert.deepEqual(await metadata.json(),{text:caption,filenames:[1,2,3,4,5].map(i=>'slide-'+i+'.png'),tiktok:{state:'setup_required'}});
   for(let position=0;position<5;position++){
     const image=await s.serve('image',{position});
     assert.equal(image.status,200);assert.equal(image.headers.get('Content-Type'),'image/png');

@@ -61,6 +61,9 @@ export function createStorage(env, {fetcher = fetch, now = Date.now} = {}) {
     const owner = crypto.randomUUID(), instant = now();
     if (!await db.lock('visual', owner, instant, 90_000)) return {state: 'busy'};
     try {
+      // TikTok fetches JPEG copies for at most two hours. Preserve upload IDs
+      // and approval history; release only expired temporary image bytes.
+      await db.run('DELETE FROM tiktok_upload_assets WHERE story_id IN (SELECT story_id FROM tiktok_uploads WHERE media_expires<=?)',instant);
       // No deletion based on the publication date: previews may have been
       // rendered much later. Legacy clocks start today, never retroactively.
       await db.run(`INSERT OR IGNORE INTO runtime(key,value) SELECT ?||r.key,? FROM runtime r WHERE r.key GLOB 'visual_preview:*' AND NOT EXISTS(SELECT 1 FROM runtime c WHERE c.key=?||r.key) LIMIT 10`, previewClock, JSON.stringify(instant), previewClock);

@@ -65,7 +65,7 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
   }
   async function showReview(job,story) {
     const x=job.platform==='x'?xForJob(story,job):null;
-    const approveLabel=x?'Aprobar y compartir en X':'Aprobar versión final';
+    const approveLabel=x?'Aprobar y compartir en X':job.platform==='tiktok'?'Aprobar y compartir en TikTok':'Aprobar versión final';
     const approval={text:approveLabel,callback_data:'ok'+codes[job.platform]+':'+job.story_id};
     const success=await edit(job,'✅ '+platforms[codes[job.platform]]+' · Listo para revisar\n\n'+(job.platform==='x'?x.text+'\n\n'+x.weightedLength+'/280 caracteres ponderados.':socialKit(story)[job.platform].caption)+
       (x?'\n\nRevisa el texto y la portada. Pulsa «Aprobar y compartir en X» para habilitar los botones de compartir.':'\n\nRevisa el grupo de cinco láminas recibido. Aprobar confirma el material; no publica.'),
@@ -101,10 +101,14 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
     if (!story) return false;
     const url = await shareTikTokUrl(env, id, now());
     const caption = socialKit(story).tiktok.caption;
-    return edit(job, '✅ TikTok · Carrusel aprobado\n\n' + caption +
-      '\n\n' + (url ? 'Abre el botón para compartir las cinco láminas y el texto desde el móvil.' : 'Puedes cargar las cinco láminas del grupo anterior en TikTok.'), {
-      inline_keyboard: url ? [[{text: 'Preparar post en TikTok', url}], [{text: 'Renovar enlace', callback_data: 'okt:' + id}]] : []
+    const success = await edit(job, '✅ TikTok · Carrusel aprobado\n\n' + caption +
+      '\n\n' + (url ? 'Comparte las cinco láminas y la descripción desde el botón. Con la cuenta conectada, podrás enviarlas como borrador a TikTok y terminar allí.' : 'Puedes cargar las cinco láminas del grupo anterior en TikTok.'), {
+      inline_keyboard: url ? [[{text: 'Compartir en TikTok', url}], [{text: 'Renovar enlace', callback_data: 'okt:' + id}]] : []
     });
+    const attempt=Number(/^share-edit-pending:(\d+)$/.exec(job.error||'')?.[1]||0)+1;
+    await db.run("UPDATE channel_jobs SET error=?,lease_until=? WHERE story_id=? AND platform='tiktok' AND state='approved'",
+      success?null:attempt<3?'share-edit-pending:'+attempt:'share-edit-failed',success?0:now()+60_000,id);
+    return success;
   }
   async function pick(id,code,messageId) {
     const platform=names[code];
@@ -206,11 +210,11 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
     if(!await db.lock('visual',owner,instant,90_000))return {state:'busy'};
     let job;
     try {
-      job=await db.first(jobWithCopy+" WHERE j.lease_until<=? AND (j.state IN ('queued','rendering','sending') OR (j.state='review' AND j.error='review-edit-pending') OR (j.platform='x' AND j.state='approved' AND j.error GLOB 'share-edit-pending:*')) ORDER BY j.created_at LIMIT 1",instant);
+      job=await db.first(jobWithCopy+" WHERE j.lease_until<=? AND (j.state IN ('queued','rendering','sending') OR (j.state='review' AND j.error='review-edit-pending') OR (j.platform IN ('x','tiktok') AND j.state='approved' AND j.error GLOB 'share-edit-pending:*')) ORDER BY j.created_at LIMIT 1",instant);
       if(!job)return {state:'idle'};
       const story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",job.story_id);
       if(!story)throw new ServiceError('approval-required');
-      if(job.state==='approved')return {state:await refreshX(job.story_id)?'approved':'share-edit-pending'};
+      if(job.state==='approved')return {state:await (job.platform==='x'?refreshX(job.story_id):refreshTikTok(job.story_id))?'approved':'share-edit-pending'};
       if(job.state==='review'){await showReview(job,story);return {state:'review'};}
       if(job.state==='sending')throw new ServiceError('delivery-uncertain');
       if(!await storage.allow())return {state:'storage-paused'};

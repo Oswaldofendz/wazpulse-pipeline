@@ -12,10 +12,10 @@ import {NOW,setup,callback,decodeUpload} from './helpers.js';
 const JPEG='/9j/'+'A'.repeat(160),PNG=new Uint8Array([137,80,78,71,13,10,26,10,1,2,3]);
 async function fixture(overrides={}) {
   const s=setup({MEDIA_ENABLED:'true',LEGACY_APPROVAL_ENABLED:'false',...overrides});
-  const state={edits:[],keyboards:[],uploads:[],generated:0,rendered:[],instant:NOW,lose:false,loseDraft:false,failButtons:false};
+  const state={edits:[],keyboards:[],uploads:[],generated:0,rendered:[],instant:NOW,lose:false,loseDraft:false,failButtons:false,failEdits:false};
   const fetcher=async(url,options={})=>{
     options=await decodeUpload(options);
-    if(url.endsWith('/editMessageText')){state.edits.push(JSON.parse(options.body));return Response.json({ok:true,result:{message_id:100}});}
+    if(url.endsWith('/editMessageText')){state.edits.push(JSON.parse(options.body));if(state.failEdits)throw Error('edit response lost');return Response.json({ok:true,result:{message_id:100}});}
     if(url.endsWith('/editMessageReplyMarkup')){
       state.keyboards.push(JSON.parse(options.body));
       if(state.failButtons)throw Error('keyboard response lost');
@@ -160,9 +160,30 @@ test('Instagram and TikTok each send one five-document group, reuse one image an
   assert.equal(s.state.messages.length,3);
   await s.channels.action('okt',s.story.id,job(s,'tiktok').draft_message);
   const link=s.channelState.edits.at(-1).reply_markup.inline_keyboard[0][0];
-  assert.equal(link.text,'Preparar post en TikTok');
+  assert.equal(link.text,'Compartir en TikTok');
   assert.match(link.url,/^https:\/\/fixture\.workers\.dev\/share\/tiktok#/);
   assert.equal(s.channelState.uploads.length,2);
+});
+test('TikTok sharing controls recover by editing the same message and stop after three failures',async()=>{
+  const s=await fixture({WORKER_ORIGIN:'https://fixture.workers.dev',ADMIN_TOKEN:'fixture-only'});
+  await s.channels.pick(s.story.id,'t',s.story.message_id);
+  s.db.native.exec("UPDATE channel_jobs SET state='approved',delivery='sent'");
+  for(let n=0;n<5;n++)s.db.native.prepare("INSERT INTO channel_assets(story_id,platform,position,filename,file_id) VALUES(?,'tiktok',?,?,?)").run(s.story.id,n,'fixture-'+n+'.png','file-'+n);
+  const count=s.state.messages.length;
+  s.channelState.failEdits=true;
+  assert.equal(await s.channels.refreshTikTok(s.story.id),false);
+  assert.equal(job(s,'tiktok').error,'share-edit-pending:1');
+  s.channelState.instant+=60_000;
+  assert.equal((await s.channels.step()).state,'share-edit-pending');
+  s.channelState.failEdits=false;s.channelState.instant+=60_000;
+  assert.equal((await s.channels.step()).state,'approved');
+  assert.equal(job(s,'tiktok').error,null);
+  assert.equal(s.channelState.edits.at(-1).reply_markup.inline_keyboard[0][0].text,'Compartir en TikTok');
+  s.channelState.failEdits=true;
+  for(let i=0;i<3;i++)await s.channels.refreshTikTok(s.story.id);
+  assert.equal(job(s,'tiktok').error,'share-edit-failed');
+  s.channelState.instant+=60_000;assert.equal((await s.channels.step()).state,'idle');
+  assert.equal(s.state.messages.length,count);assert.equal(s.channelState.uploads.length,0);
 });
 test('the chosen X variant is used for review, caption and the signed mobile share link',async()=>{
   const origin='https://fixture.workers.dev';
