@@ -26,10 +26,11 @@ Deferred to Bloque 6c:
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from . import wastake_client, card_generator, entity_detector
+from . import config, wastake_client, card_generator, entity_detector
+from .review_policy import valid_strength
 from .rss_fetcher import is_parasitic
 from .supabase_client import get_client
 
@@ -195,6 +196,7 @@ def _list_pending(limit: int) -> list[dict]:
         client.table("pulse_candidates")
         .select("id, headline, source, source_url, payload, event_type, asset_id, asset_type, priority")
         .eq("status", "pending")
+        .gte("detected_at", (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat())
         .order("priority", desc=True)
         .order("detected_at", desc=False)
         .limit(pool_size)
@@ -309,8 +311,10 @@ def _process_one(candidate: dict, snapshot: Optional[dict]) -> Optional[str]:
 
     # Quality gate: drop filler posts before they pollute pulse_posts and
     # before we spend cycles generating cards / showing them in Telegram.
-    angle_strength = angle.get("strength") or 0
-    if angle_strength and angle_strength < MIN_ANGLE_STRENGTH_INSERT:
+    angle_strength = valid_strength(angle.get("strength"))
+    if angle_strength is None:
+        return "news-angle returned invalid strength; retained for retry"
+    if angle_strength < MIN_ANGLE_STRENGTH_INSERT:
         # Mark candidate as processed so we don't keep retrying it.
         try:
             _mark_candidate(candidate["id"], "processed")

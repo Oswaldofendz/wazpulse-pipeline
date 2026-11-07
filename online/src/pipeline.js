@@ -1,0 +1,255 @@
+import {BACKEND, DAY, normalizeStory, validateEditorial, isOwner, makePack} from './domain.js';
+import {store} from './store.js';
+import {network, telegram, ServiceError} from './io.js';
+import {createMedia} from './media.js';
+import {createChannels, newsCard, newsButtons} from './channels.js';
+import {createFast} from './fast.js';
+import {FAST_EDITORIAL_PROVIDER} from './fast-editorial.js';
+import {shareOrigin} from './share-x.js';
+import {tiktokConnectUrl} from './tiktok-auth.js';
+
+const enabled = value => value === 'true';
+const boundedInt = (value, fallback, max) => {
+  if (value === undefined || value === '') return fallback;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 && n <= max ? n : fallback;
+};
+
+export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
+  const db = store(env.DB), net = network(fetcher), bot = telegram(env, net);
+  const media = createMedia(env, {fetcher, now});
+  const channels = createChannels(env, {fetcher, now});
+  const active = () => enabled(env.PIPELINE_ENABLED);
+  const minimum = () => boundedInt(env.MIN_PRIORITY, 65, 100);
+  const strength = () => boundedInt(env.MIN_STRENGTH, 4, 5);
+
+  async function status() {
+    const rows = await db.all('SELECT state,COUNT(*) AS count FROM stories GROUP BY state');
+    const last = await db.first("SELECT value FROM runtime WHERE key='last_tick'");
+    const budget = await db.first('SELECT used FROM daily_budget WHERE day=?', new Date(now()).toISOString().slice(0, 10));
+    return {enabled: active(), aiEnabled: enabled(env.AI_ENABLED), states: rows,
+      lastTick: last ? JSON.parse(last.value) : null, dailyBackendCalls: budget?.used || 0,
+      dailyLimit: boundedInt(env.DAILY_LLM_LIMIT, 6, 16)};
+  }
+
+  async function sendReview(id, force = false) {
+    if(!force) {
+      const fast=await db.first("SELECT s.* FROM stories s JOIN fast_events f ON f.story_id=s.id WHERE s.id=? AND s.state='ready' AND s.notification='sent' AND length(s.message_id)>0 AND f.kind='news'",id);
+      if(fast) {
+        const claim=await db.first("UPDATE stories SET notification='sending' WHERE id=? AND state='ready' AND notification='sent' RETURNING id",id);
+        if(!claim)return false;
+        try {await bot.edit(fast.message_id,newsCard(fast),newsButtons(id,fast.source_url));await db.notified(id,Number(fast.message_id));return true;}
+        catch {await db.uncertain(id);return false;}
+      }
+    }
+    const story = await db.notification(id, force);
+    if (!story) return false;
+    try {
+      const source = JSON.parse(story.editorial).provider === FAST_EDITORIAL_PROVIDER ? story.source_url : null;
+      const result = await bot.send(newsCard(story), newsButtons(story.id, source));
+      if (!Number.isSafeInteger(result?.message_id)) throw new Error('Missing message ID');
+      await db.notified(story.id, result.message_id);
+      return true;
+    } catch {
+      // A failed response may follow a delivered message. Never blindly resend.
+      await db.uncertain(story.id);
+      return false;
+    }
+  }
+
+  async function deliverPack(id, force = false) {
+    const story = await db.claimPack(id, force);
+    if (!story) return false;
+    try {
+      await bot.document(makePack(story), 'WaCapital-' + story.id + '.txt');
+      await db.packDone(story.id);
+      return true;
+    } catch {
+      await db.packUncertain(story.id);
+      return false;
+    }
+  }
+
+  async function handleUpdate(update) {
+    if (!isOwner(update, env)) return;
+    const callback = update.callback_query;
+    if (callback) {
+      // Answer immediately; document generation uses no LLM and runs afterwards.
+      await bot.answer(callback.id, 'Procesando revisión').catch(() => {});
+      const [action, id] = callback.data.split(':');
+      if (/^pick[xit]$/.test(action)) {
+        await channels.pick(id,action.at(-1),callback.message.message_id);
+        return;
+      }
+      if (/^(gen[qh]|(?:gen|ok|cancel|info)[xit])$/.test(action)) {
+        await channels.action(action,id,callback.message.message_id);
+        return;
+      }
+      if(action==='approve'&&env.LEGACY_APPROVAL_ENABLED!=='true') {
+        const story=await db.first("SELECT * FROM stories WHERE id=? AND state IN ('pending','approved') AND message_id=?",id,String(callback.message.message_id));
+        if(story)await bot.edit(callback.message.message_id,newsCard(story),newsButtons(id));
+        return;
+      }
+      if (action === 'visualok' || action === 'visualno') {
+        await media.review(id, callback.message.message_id, action === 'visualok');
+        return;
+      }
+      // Resume an interrupted approval without approving a different message
+      // or sending a package twice. Both delivery claims remain idempotent.
+      const story = await db.review(id, callback.message.message_id, action === 'approve', now()) ||
+        (action === 'approve' ? await db.first("SELECT * FROM stories WHERE id=? AND state='approved' AND message_id=?", id, String(callback.message.message_id)) : null);
+      if (story?.state === 'approved') {
+        await deliverPack(id);
+        if (await media.enqueue(id)) await bot.send('🎨 Texto aprobado. Prepararé una ilustración con IA, la portada para X y cinco láminas. Llegarán durante los próximos minutos; después podrás aprobar la versión visual.');
+      }
+      return;
+    }
+    const command = update.message?.text?.trim();
+    if (command === '/estado' || command === '/start') {
+      const result = await status();
+      await bot.send('WaCapital · ' + (active() ? 'Activo' : 'Pausado') +
+        '\nLlamadas editoriales hoy: ' + result.dailyBackendCalls + '/' + result.dailyLimit +
+        '\nEstados: ' + result.states.map(x => x.state + ': ' + x.count).join(', ') +
+        '\n/rapido · /pendientes · /paquetes · /revisar ID · /paquete ID · /imagenes ID · /reenviar ID · /publicar ID · /tiktok ID · /auditoria · /redes ID');
+    } else if (command === '/conectartiktok') {
+      const url = await tiktokConnectUrl(env,now());
+      await bot.send(url ? 'Conecta la cuenta de WaCapital para recibir los carruseles aprobados en TikTok. El enlace caduca en 15 minutos.' :
+        'La carga automática necesita activar la aplicación de WaCapital en TikTok for Developers. Mientras se completa, usa «Compartir en TikTok» en un carrusel aprobado para compartir o guardar las láminas desde el móvil.',
+        url ? {inline_keyboard:[[{text:'Conectar cuenta de TikTok',url}]]} : undefined);
+    } else if (command === '/auditoria') {
+      const origin = shareOrigin(env);
+      if (origin) await bot.send('📊 WaCapital · Auditoría de redes\n\nRegistra y compara X, Instagram y TikTok. Los datos se guardan en el navegador donde los captures.', {
+        inline_keyboard: [[{text: 'Abrir auditor de cuentas', url: origin + '/auditoria'}]]
+      });
+    } else if(command==='/rapido') {
+      const s=await createFast(env,{fetcher,now}).status(),fresh=s.quotes.filter(q=>q.ageSeconds!==null&&q.ageSeconds<=180);
+      await bot.send('⚡ WaCapital · Vía rápida\n'+(s.enabled?(s.alertsEnabled?'Avisos activos':'Observación sin avisos'):'Pausada')+
+        '\nÚltima revisión: '+(s.last?new Date(s.last.at).toISOString().slice(11,19)+' UTC':'pendiente')+
+        '\nAvisos hoy: '+(s.budget?.alerts_used||0)+'/'+s.dailyAlertLimit+
+        '\nCotizaciones recientes: '+fresh.map(q=>q.name+' ('+q.ageSeconds+' s)').join(', ')+
+        '\nFuentes directas: '+s.feeds.filter(f=>f.lastSuccess&&now()-f.lastSuccess<5*60_000).length+'/'+s.feeds.length+
+        '\nLas alertas no publican en redes.');
+    } else if (command === '/pendientes') {
+      const rows = await db.all("SELECT id,title FROM stories WHERE state IN ('ready','pending') AND published_at>=? ORDER BY priority DESC LIMIT 5", now() - DAY);
+      await bot.send(rows.length ? rows.map(x => x.title.slice(0, 180) + '\n/revisar ' + x.id).join('\n\n') : 'No hay materiales pendientes recientes.');
+    } else if (command === '/paquetes') {
+      const rows = await db.all("SELECT id,title,pack_delivery FROM stories WHERE state='approved' ORDER BY approved_at DESC LIMIT 5");
+      await bot.send(rows.length ? rows.map(x => x.title.slice(0, 160) + '\nEntrega: ' + x.pack_delivery + '\n/paquete ' + x.id).join('\n\n') : 'Todavía no hay paquetes aprobados.');
+    } else if (/^\/revisar [a-f0-9]{32}$/.test(command || '')) {
+      const id = command.split(' ')[1];
+      // Explicit user retry; old buttons stop working once the new ID is saved.
+      if (!await sendReview(id, true)) await bot.send('No se pudo enviar la revisión. Consulta /estado.');
+    } else if (/^\/paquete [a-f0-9]{32}$/.test(command || '')) {
+      if (!await deliverPack(command.split(' ')[1], true)) await bot.send('No hay un paquete aprobado disponible o falló el envío.');
+    } else if (/^\/imagenes [a-f0-9]{32}$/.test(command || '')) {
+      const result = await media.status(command.split(' ')[1]);
+      const labels = {queued: 'En cola', rendering: 'Preparando imágenes', review: 'Pendiente de tu revisión', approved: 'Versión final aprobada', rejected: 'Imágenes descartadas', blocked: 'Preparación interrumpida'};
+      await bot.send(result ? '🎨 Imágenes: ' + labels[result.state] + '\nOriginales entregados: ' + result.assets.filter(x => x.delivery === 'sent').length + '/6' : 'No hay imágenes en preparación para esa noticia.');
+    } else if (/^\/reenviar [a-f0-9]{32}$/.test(command || '')) {
+      if (!await media.resend(command.split(' ')[1])) await bot.send('No hay imágenes disponibles para reenviar.');
+    } else if (/^\/publicar [a-f0-9]{32}$/.test(command || '')) {
+      const id=command.split(' ')[1];
+      if (!await channels.refreshX(id) && !await media.prepareX(id)) await bot.send('Primero aprueba la versión visual y confirma la entrega de su portada. No se ha publicado nada.');
+    } else if (/^\/tiktok [a-f0-9]{32}$/.test(command || '')) {
+      if (!await channels.refreshTikTok(command.split(' ')[1])) await bot.send('Aprueba primero las cinco láminas de TikTok para recuperar su botón.');
+    } else if (/^\/redes [a-f0-9]{32}$/.test(command || '')) {
+      if(!await media.sendSocial(command.split(' ')[1]))await bot.send('Elige una noticia cuyo texto ya hayas aprobado. No se ha publicado nada.');
+    }
+  }
+
+  async function drainInbox(max = 2) {
+    if (!active()) return 0;
+    let processed=0;
+    for (let n = 0; n < max; n++) {
+      const row = await db.claimUpdate(now());
+      if (!row) break;
+      processed++;
+      try {
+        await handleUpdate(JSON.parse(row.payload));
+        await db.finishUpdate(row.update_id);
+      } catch { await db.failUpdate(row.update_id, row.attempts, now()); }
+    }
+    return processed;
+  }
+
+  async function tick({collect=true,inbox=true}={}) {
+    if (!active()) return {state: 'paused'};
+    const owner = crypto.randomUUID(), instant = now();
+    if (!await db.lock('tick', owner, instant, 8 * 60_000)) return {state: 'busy'};
+    const result = {at: new Date(instant).toISOString(), state: 'ok', inserted: 0, editorial: 0, notifications: 0};
+    let stage = 'inbox';
+    try {
+      if(inbox)await drainInbox(2);
+      stage = 'capacity';
+      const size = await db.first('SELECT COUNT(*) AS count FROM stories');
+      if (size.count >= 5000) {
+        result.state = 'storage-cap';
+      } else if(collect) {
+        try {
+        // This existing endpoint performs RSS aggregation; no provider keys move.
+        stage = 'source';
+        const source = await net.json(BACKEND + '/api/market/impact-alerts');
+        result.sourceStatus = source.status || 'unknown';
+        if (['ok', 'partial'].includes(source.status) && Array.isArray(source.alerts)) {
+          const candidates = source.alerts.slice(0, 40).filter(a => typeof a.priority === 'number' && a.priority >= minimum())
+            .sort((a, b) => b.priority - a.priority || Date.parse(b.publishedAt) - Date.parse(a.publishedAt));
+          const incoming=[];
+          for (const article of candidates.slice(0, 8)) {
+            stage = 'normalize';
+            const story = await normalizeStory(article, instant);
+            if (story) {
+              incoming.push(story);
+            }
+          }
+          stage='insert';result.inserted+=await db.insertMany(incoming,instant);
+        }
+        }catch(error){result.state='source-unavailable';if(error instanceof ServiceError){result.failure=error.service;result.upstreamStatus=error.status;}}
+      }
+      if (enabled(env.AI_ENABLED)) {
+        stage = 'editorial';
+        const pending = await db.next(instant, instant - 6 * 3_600_000);
+        const day = new Date(instant).toISOString().slice(0, 10);
+        const cap=boundedInt(env.DAILY_LLM_LIMIT,6,16);
+        const allowed=env.FAST_ENABLED==='true'&&pending?.priority<95?Math.max(0,cap-2):cap;
+        if (pending && await db.reserve(day, allowed)) {
+          const story = await db.claim(pending.id, instant);
+          if (story) {
+            try {
+              const raw = await net.json(BACKEND + '/api/analysis/news-angle', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({title: story.title, summary: story.snippet, link: story.source_url, tickers: JSON.parse(story.assets), lang: 'es'})
+              }, 25_000);
+              const editorial = validateEditorial(raw);
+              if (!editorial) throw new Error('Invalid editorial');
+              if (editorial.strength >= strength()) {
+                await db.ready(story.id, editorial);
+                result.editorial++;
+              } else await db.ignore(story.id);
+            } catch {
+              await db.retry(story.id, instant, story.attempts);
+              result.state = 'editorial-unavailable';
+            }
+          }
+        }
+      }
+      stage = 'review';
+      const review = await db.first("SELECT id FROM stories WHERE state='ready' AND (notification='new' OR (notification='sent' AND EXISTS(SELECT 1 FROM fast_events f WHERE f.story_id=stories.id AND f.kind='news'))) AND published_at>=? ORDER BY priority DESC,published_at DESC LIMIT 1", instant - DAY);
+      if (review && env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) {
+        result.notifications = Number(await sendReview(review.id));
+      }
+    } catch (error) {
+      result.state = 'source-or-storage-unavailable';
+      result.failedStage = stage;
+      if (error instanceof ServiceError) {
+        result.failure = error.service;
+        result.upstreamStatus = error.status;
+      }
+    }
+    finally {
+      await db.set('last_tick', result);
+      await db.unlock('tick', owner);
+    }
+    return result;
+  }
+  return {tick, status, drainInbox, handleUpdate, sendReview, deliverPack};
+}

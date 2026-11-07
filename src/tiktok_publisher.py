@@ -460,6 +460,9 @@ def run_one_cycle() -> dict:
         "errors":             0,
     }
 
+    if not config.ENABLE_SOCIAL_PUBLISHING:
+        return stats
+
     if not all([
         config.TIKTOK_CLIENT_KEY,
         config.TIKTOK_CLIENT_SECRET,
