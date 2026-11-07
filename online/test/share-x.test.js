@@ -92,7 +92,7 @@ test('Telegram approval recovery updates the same message with the combined-shar
   }});
   assert.equal(await channels.refreshX(s.story.id),true);
   const buttons=edits[0].reply_markup.inline_keyboard.flat();
-  assert.equal(buttons[0].text,'Compartir texto e imagen');
+  assert.equal(buttons[0].text,'Compartir en Twitter/X');
   assert.ok(buttons[0].url.startsWith(ORIGIN+'/share/x#'));
   assert.equal(buttons[1].text,'Abrir X solo con texto');
 });

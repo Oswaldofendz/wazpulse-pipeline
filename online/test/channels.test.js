@@ -7,14 +7,20 @@ import {minimalUpdate} from '../src/domain.js';
 import {visualBrief} from '../src/publication.js';
 import {shareXRequest} from '../src/share-x.js';
 import {createStorage} from '../src/storage.js';
+import {network,telegram} from '../src/io.js';
 import {NOW,setup,callback,decodeUpload} from './helpers.js';
 const JPEG='/9j/'+'A'.repeat(160),PNG=new Uint8Array([137,80,78,71,13,10,26,10,1,2,3]);
 async function fixture(overrides={}) {
   const s=setup({MEDIA_ENABLED:'true',LEGACY_APPROVAL_ENABLED:'false',...overrides});
-  const state={edits:[],uploads:[],generated:0,rendered:[],instant:NOW,lose:false,loseDraft:false};
+  const state={edits:[],keyboards:[],uploads:[],generated:0,rendered:[],instant:NOW,lose:false,loseDraft:false,failButtons:false};
   const fetcher=async(url,options={})=>{
     options=await decodeUpload(options);
     if(url.endsWith('/editMessageText')){state.edits.push(JSON.parse(options.body));return Response.json({ok:true,result:{message_id:100}});}
+    if(url.endsWith('/editMessageReplyMarkup')){
+      state.keyboards.push(JSON.parse(options.body));
+      if(state.failButtons)throw Error('keyboard response lost');
+      return Response.json({ok:true,result:{message_id:JSON.parse(options.body).message_id}});
+    }
     if(url.endsWith('/sendMessage')&&state.loseDraft)throw Error('uncertain draft');
     if(url.endsWith('/sendDocument')){
       state.uploads.push(options.body);
@@ -80,6 +86,61 @@ test('X prepares just one PNG and keeps full tweet with weighted count; final ap
   assert.equal(s.state.messages.length,2);
   assert.ok(s.channelState.edits.at(-1).reply_markup.inline_keyboard[0][0].url.startsWith('https://twitter.com/intent/'));
   assert.equal((await s.advance()).state,'idle');
+});
+
+test('X approval and sharing buttons appear below the PNG and accept only the owner and that exact image',async()=>{
+  const origin='https://fixture.workers.dev';
+  const s=await fixture({WORKER_ORIGIN:origin,ADMIN_TOKEN:'test-only'});
+  await s.channels.pick(s.story.id,'x',s.story.message_id);
+  await s.channels.action('genx',s.story.id,job(s).draft_message);
+  for(let i=0;i<4;i++)await s.advance();
+  const asset=s.db.native.prepare("SELECT * FROM channel_assets WHERE platform='x' AND position=0").get();
+  const controls=s.channelState.keyboards.at(-1);
+  assert.equal(String(controls.message_id),asset.message_id);
+  assert.equal(controls.reply_markup.inline_keyboard[0][0].text,'Aprobar y compartir en X');
+  assert.equal(controls.reply_markup.inline_keyboard.flat().some(button=>button.url),false);
+  const approval=callback(s.story,{data:'okx:'+s.story.id,message:{message_id:Number(asset.message_id),chat:{id:123}}});
+  await s.p.handleUpdate({...approval,callback_query:{...approval.callback_query,from:{id:999}}});
+  assert.equal(job(s).state,'review');
+  assert.equal(await s.channels.action('okx',s.story.id,Number(asset.message_id)+1),false);
+  await s.p.handleUpdate(approval);
+  assert.equal(job(s).state,'approved');
+  assert.equal(job(s).error,null);
+  const image=s.channelState.keyboards.at(-1);
+  const text=s.channelState.edits.at(-1);
+  assert.equal(image.reply_markup.inline_keyboard[0][0].text,'Compartir en Twitter/X');
+  assert.match(image.reply_markup.inline_keyboard[0][0].url,/^https:\/\/fixture\.workers\.dev\/share\/x#/);
+  assert.deepEqual(image.reply_markup,text.reply_markup);
+  assert.equal(s.channelState.uploads.length,1);
+});
+
+test('an interrupted X keyboard edit retries only the existing controls and stops after three failures',async()=>{
+  const s=await fixture({WORKER_ORIGIN:'https://fixture.workers.dev',ADMIN_TOKEN:'test-only'});
+  await s.channels.pick(s.story.id,'x',s.story.message_id);
+  await s.channels.action('genx',s.story.id,job(s).draft_message);
+  for(let i=0;i<4;i++)await s.advance();
+  s.channelState.failButtons=true;
+  await s.channels.action('okx',s.story.id,job(s).draft_message);
+  assert.equal(job(s).state,'approved');
+  assert.equal(job(s).error,'share-edit-pending:1');
+  for(let i=0;i<2;i++){s.channelState.instant+=60_000;await s.channels.step();}
+  assert.equal(job(s).error,'share-edit-failed');
+  s.channelState.instant+=60_000;
+  assert.equal((await s.channels.step()).state,'idle');
+  assert.equal(s.channelState.uploads.length,1);
+  assert.equal(s.channelState.generated,1);
+  s.channelState.failButtons=false;
+  assert.equal(await s.channels.refreshX(s.story.id),true);
+  assert.equal(job(s).error,null);
+});
+
+test('Telegram unchanged text and keyboard edits are idempotent while other HTTP 400 errors remain failures',async()=>{
+  const env={TELEGRAM_BOT_TOKEN:'test',TELEGRAM_CHAT_ID:'123'};
+  const bot=telegram(env,network(async()=>Response.json({ok:false,error_code:400,description:'Bad Request: message is not modified'},{status:400})));
+  assert.deepEqual(await bot.edit(5,'Copy',{}),{message_id:5});
+  assert.deepEqual(await bot.buttons(5,{inline_keyboard:[]}),{message_id:5});
+  const broken=telegram(env,network(async()=>Response.json({ok:false,error_code:400,description:'Bad Request: message to edit not found'},{status:400})));
+  await assert.rejects(()=>broken.buttons(5,{inline_keyboard:[]}));
 });
 test('Instagram and TikTok each send one five-document group, reuse one image and use their own dimensions',async()=>{
   const s=await fixture({WORKER_ORIGIN:'https://fixture.workers.dev',ADMIN_TOKEN:'test-only'});

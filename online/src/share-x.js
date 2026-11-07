@@ -30,7 +30,7 @@ export async function shareXUrl(env,story,cover,kind='c',now=Date.now(),selected
   return base+'/share/x#'+[story.id,expires,kind,sig].join('.');
 }
 export function xButtons(x,shareUrl) {
-  return {inline_keyboard:[...(shareUrl?[[{text:'Compartir texto e imagen',url:shareUrl}]]:[]),
+  return {inline_keyboard:[...(shareUrl?[[{text:'Compartir en Twitter/X',url:shareUrl}]]:[]),
     ...(x.composeUrl?[[{text:shareUrl?'Abrir X solo con texto':'Abrir X · adjuntar portada',url:x.composeUrl}]]:[])]};
 }
 async function approvedPair(env,id,kind) {

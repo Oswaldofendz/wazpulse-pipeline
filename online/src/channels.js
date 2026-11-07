@@ -58,23 +58,41 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
     try {await bot.edit(job.draft_message,text,buttons);return true;}
     catch{return false;}
   }
+  async function editCoverButtons(cover, buttons) {
+    if (!cover?.message_id) return true;
+    try { await bot.buttons(cover.message_id, buttons); return true; }
+    catch { return false; }
+  }
   async function showReview(job,story) {
     const x=job.platform==='x'?xForJob(story,job):null;
+    const approveLabel=x?'Aprobar y compartir en X':'Aprobar versión final';
+    const approval={text:approveLabel,callback_data:'ok'+codes[job.platform]+':'+job.story_id};
     const success=await edit(job,'✅ '+platforms[codes[job.platform]]+' · Listo para revisar\n\n'+(job.platform==='x'?x.text+'\n\n'+x.weightedLength+'/280 caracteres ponderados.':socialKit(story)[job.platform].caption)+
-      '\n\nRevisa '+(job.platform==='x'?'la portada recibida.':'el grupo de cinco láminas recibido.')+' Aprobar confirma el material; no publica.',
-      {inline_keyboard:[[{text:'Aprobar versión final',callback_data:'ok'+codes[job.platform]+':'+job.story_id},{text:'Descartar',callback_data:'cancel'+codes[job.platform]+':'+job.story_id}]]});
-    if(success)await db.run("UPDATE channel_jobs SET error=NULL WHERE story_id=? AND platform=? AND state='review'",job.story_id,job.platform);
+      (x?'\n\nRevisa el texto y la portada. Pulsa «Aprobar y compartir en X» para habilitar los botones de compartir.':'\n\nRevisa el grupo de cinco láminas recibido. Aprobar confirma el material; no publica.'),
+      {inline_keyboard:[[approval],[{text:'Descartar',callback_data:'cancel'+codes[job.platform]+':'+job.story_id}]]});
+    const cover=x?await db.first("SELECT message_id FROM channel_assets WHERE story_id=? AND platform='x' AND position=0 AND length(file_id)>0",job.story_id):null;
+    const imageSuccess=await editCoverButtons(cover,{inline_keyboard:[[approval]]});
+    const saved=await db.run("UPDATE channel_jobs SET error=? WHERE story_id=? AND platform=? AND state='review'",
+      success&&imageSuccess?null:'review-edit-pending',job.story_id,job.platform);
+    if(x&&!saved.meta?.changes)await refreshX(job.story_id);
   }
   async function refreshX(id) {
     const job=await getJob(id,'x');
     if(job?.state!=='approved'||job.delivery!=='sent')return false;
     const story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",id);
-    const cover=await db.first("SELECT file_id,filename FROM channel_assets WHERE story_id=? AND platform='x' AND position=0 AND length(file_id)>0",id);
+    const cover=await db.first("SELECT file_id,filename,message_id FROM channel_assets WHERE story_id=? AND platform='x' AND position=0 AND length(file_id)>0",id);
     if(!story||!cover)return false;
     const x=xForJob(story,job),shareUrl=await shareXUrl(env,story,cover,'c',now(),selectedXText(job.x_copy));
-    return edit(job,'✅ Twitter/X · Material aprobado\n\n'+x.text+'\n\n'+x.weightedLength+'/280 · '+
+    const buttons=xButtons(x,shareUrl);
+    const textSuccess=await edit(job,'✅ Twitter/X · Material aprobado\n\n'+x.text+'\n\n'+x.weightedLength+'/280 · '+
       (shareUrl?'Comparte texto y portada desde el móvil; revisa que X reciba ambos.':'Adjunta la portada recibida al abrir X.')+
-      '\n\nFuente: '+story.source_url+'\nNo se ha publicado en redes.',xButtons(x,shareUrl));
+      '\n\nFuente: '+story.source_url+'\nNo se ha publicado en redes.',buttons);
+    const imageSuccess=await editCoverButtons(cover,buttons);
+    const complete=textSuccess&&imageSuccess;
+    const attempt=Number(/^share-edit-pending:(\d+)$/.exec(job.error||'')?.[1]||0)+1;
+    await db.run("UPDATE channel_jobs SET error=?,lease_until=? WHERE story_id=? AND platform='x' AND state='approved'",
+      complete?null:attempt<3?'share-edit-pending:'+attempt:'share-edit-failed',complete?0:now()+60_000,id);
+    return complete;
   }
   async function refreshTikTok(id) {
     const job = await getJob(id, 'tiktok');
@@ -118,7 +136,12 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
   async function action(action,id,messageId) {
     if(!/^(gen[qh]|(?:gen|ok|cancel|info)[xit])$/.test(action))return false;
     const verb=action.slice(0,-1),code=action.at(-1),platform=names[code]||'x',job=await getJob(id,platform);
-    if(!job||job.draft_message!==String(messageId))return false;
+    if(!job)return false;
+    if(job.draft_message!==String(messageId)) {
+      if(action!=='okx'||!['review','approved'].includes(job.state)||job.delivery!=='sent')return false;
+      const cover=await db.first("SELECT 1 AS valid FROM channel_assets WHERE story_id=? AND platform='x' AND position=0 AND message_id=? AND length(file_id)>0",id,String(messageId));
+      if(!cover)return false;
+    }
     const story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",id);
     if(!story)return false;
     if(verb==='gen'&&job.state==='draft'&&enabled()) {
@@ -138,13 +161,17 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
       if(!queued.meta?.changes)return false;
       await edit(job,'⏳ Preparando '+platforms[codes[platform]]+'\n\n'+JSON.parse(story.editorial).headline+'\n\nRecibirás '+(platform==='x'?'una portada.':'las cinco láminas en un solo grupo.')+' No publica en redes.');
     } else if(verb==='ok'&&['review','approved'].includes(job.state)&&job.delivery==='sent') {
-      await db.run("UPDATE channel_jobs SET state='approved',approved_at=? WHERE story_id=? AND platform=? AND state='review'",now(),id,platform);
+      await db.run("UPDATE channel_jobs SET state='approved',approved_at=?,error=? WHERE story_id=? AND platform=? AND state='review'",now(),platform==='x'?'share-edit-pending:0':null,id,platform);
       if(platform==='x')await refreshX(id);
       else if(platform==='tiktok')await refreshTikTok(id);
       else await edit(job,'✅ '+platforms[code]+' · Material aprobado\n\n'+socialKit(story)[platform].caption+'\n\nFuente: '+story.source_url+'\nNo se ha publicado en redes.');
     } else if(verb==='cancel'&&['draft','review'].includes(job.state)) {
       await db.run("UPDATE channel_jobs SET state='rejected' WHERE story_id=? AND platform=?",id,platform);
       await edit(job,'Formato descartado · '+platforms[code]+'.');
+      if(platform==='x') {
+        const cover=await db.first("SELECT message_id FROM channel_assets WHERE story_id=? AND platform='x' AND position=0",id);
+        await editCoverButtons(cover,{inline_keyboard:[]});
+      }
     } else if(verb==='info') {
       // This download is requested explicitly, never sent as part of approval.
       const kit=socialKit(story);
@@ -179,10 +206,11 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
     if(!await db.lock('visual',owner,instant,90_000))return {state:'busy'};
     let job;
     try {
-      job=await db.first(jobWithCopy+" WHERE j.lease_until<=? AND (j.state IN ('queued','rendering','sending') OR (j.state='review' AND j.error='review-edit-pending')) ORDER BY j.created_at LIMIT 1",instant);
+      job=await db.first(jobWithCopy+" WHERE j.lease_until<=? AND (j.state IN ('queued','rendering','sending') OR (j.state='review' AND j.error='review-edit-pending') OR (j.platform='x' AND j.state='approved' AND j.error GLOB 'share-edit-pending:*')) ORDER BY j.created_at LIMIT 1",instant);
       if(!job)return {state:'idle'};
       const story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",job.story_id);
       if(!story)throw new ServiceError('approval-required');
+      if(job.state==='approved')return {state:await refreshX(job.story_id)?'approved':'share-edit-pending'};
       if(job.state==='review'){await showReview(job,story);return {state:'review'};}
       if(job.state==='sending')throw new ServiceError('delivery-uncertain');
       if(!await storage.allow())return {state:'storage-paused'};

@@ -28,7 +28,7 @@ export async function readBounded(response, maxBytes = 240_000) {
 
 export function network(fetcher = fetch) {
   return {
-    async json(url, options = {}, timeout = 20_000, uploadLimit = 2_100_000) {
+    async json(url, options = {}, timeout = 20_000, uploadLimit = 2_100_000, allowUnchangedEdit = false) {
       let response;
       if(options.body instanceof FormData){
         // Workers can stream FormData with no known length. Materialize this
@@ -43,7 +43,15 @@ export function network(fetcher = fetch) {
       try {
         response = await fetcher(url, {...options, redirect: 'manual', signal: AbortSignal.timeout(timeout)});
       } catch (error) { throw new ServiceError(['TimeoutError','AbortError'].includes(error?.name)?'network-timeout':'network'); }
-      if (!response.ok) throw new ServiceError('http', response.status);
+      if (!response.ok) {
+        if (allowUnchangedEdit && response.status === 400) {
+          try {
+            const data = JSON.parse(await readBounded(response, 16_000));
+            if (data.ok === false && data.error_code === 400 && /message is not modified/i.test(data.description || '')) return data;
+          } catch {}
+        }
+        throw new ServiceError('http', response.status);
+      }
       try { return JSON.parse(await readBounded(response)); }
       catch (error) {
         if (error instanceof ServiceError) throw error;
@@ -56,10 +64,11 @@ export function network(fetcher = fetch) {
 export function telegram(env, net) {
   const url = method => 'https://api.telegram.org/bot' + env.TELEGRAM_BOT_TOKEN + '/' + method;
   async function call(method, body, timeout = 8000) {
+    const editing = ['editMessageText', 'editMessageReplyMarkup'].includes(method);
     const data = await net.json(url(method), {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
-    }, timeout);
-    if(!data.ok && method==='editMessageText' && data.error_code===400 && /message is not modified/i.test(data.description||''))return {message_id:body.message_id};
+    }, timeout, 2_100_000, editing);
+    if(!data.ok && editing && data.error_code===400 && /message is not modified/i.test(data.description||''))return {message_id:body.message_id};
     if (!data.ok) throw new ServiceError('telegram', data.error_code || 0);
     return data.result;
   }
@@ -78,6 +87,9 @@ export function telegram(env, net) {
     edit: (messageId, text, keyboard) => call('editMessageText', {
       chat_id: env.TELEGRAM_CHAT_ID, message_id: Number(messageId), text,
       link_preview_options: {is_disabled:true}, reply_markup: keyboard || {inline_keyboard:[]}
+    }),
+    buttons: (messageId, keyboard) => call('editMessageReplyMarkup', {
+      chat_id: env.TELEGRAM_CHAT_ID, message_id: Number(messageId), reply_markup: keyboard
     }),
     async album(assets, caption) {
       const form=new FormData();
