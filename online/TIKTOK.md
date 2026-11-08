@@ -12,15 +12,42 @@ La opción de compartir con el menú del móvil sigue disponible. Que TikTok
 aparezca y reciba los archivos depende del teléfono y de su versión; esa
 opción no equivale a la carga oficial como borrador.
 
-## Activación pendiente
+## Elegibilidad de producción: comprobación del 8 de noviembre de 2026
+
+Las App Review Guidelines generales, además de las reglas específicas de
+Direct Post, indican que las aplicaciones no pueden ser de uso privado o
+personal y exigen un sitio web desarrollado y accesible al público. Esto
+afecta al proceso de revisión de una aplicación que pide `video.upload`.
+El bot actual es una herramienta interna de WaCapital. Completar el icono,
+la descripción o las páginas legales no demuestra que cumpla ese requisito.
+No se debe presentar el servicio como una plataforma pública o multicuenta
+para conseguir aprobación: esa no es su implementación actual.
+
+El siguiente paso es comprobar el flujo en Sandbox con una cuenta propia
+añadida como Target user. Sandbox permite probar sin revisión previa, con
+restricciones, y no ofrece Content Posting API para vídeos públicos. La
+documentación no confirma aquí que un carrusel enviado con MEDIA_UPLOAD
+desde Sandbox pueda terminar como post público en la app. Se necesita una
+prueba real del permiso, la carga y la notificación; la prueba local con red
+simulada no confirma esa capacidad ni una aprobación de producción.
+
+Hasta entonces se conserva el botón de compartir del móvil y la carga API
+permanece desactivada. No se crean credenciales de producción, ni se
+publican condiciones o datos de un responsable inventados.
+
+Referencias:
+
+- https://developers.tiktok.com/docs/en/app-review-guidelines
+- https://developers.tiktok.com/docs/en/add-a-sandbox
+
+## Activación técnica pendiente
 
 Se necesita una aplicación real en TikTok for Developers, Login Kit para
 web y Content Posting API con el permiso de carga `video.upload` autorizado.
 El propietario debe autorizar también `user.info.basic`, para identificar
 la cuenta conectada en la página de envío. No se solicita `video.publish`.
-La aprobación de la aplicación depende de TikTok y no está garantizada.
-Las restricciones de uso de Direct Post no se resuelven usando enlaces
-inventados al editor; esta integración no utiliza Direct Post.
+La elegibilidad descrita arriba debe resolverse antes de solicitar una
+revisión de producción. Esta integración no utiliza Direct Post.
 
 Datos para registrar en la aplicación:
 
