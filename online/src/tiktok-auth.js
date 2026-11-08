@@ -20,7 +20,8 @@ async function key(env) {
 }
 async function save(env, account) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const bytes = await crypto.subtle.encrypt({name:'AES-GCM', iv, additionalData:encoder.encode(accountKey)}, await key(env), encoder.encode(JSON.stringify(account)));
+  const bound = {...account, clientKeyHash:await digest(env.TIKTOK_CLIENT_KEY)};
+  const bytes = await crypto.subtle.encrypt({name:'AES-GCM', iv, additionalData:encoder.encode(accountKey)}, await key(env), encoder.encode(JSON.stringify(bound)));
   const hex = value => [...new Uint8Array(value)].map(n => n.toString(16).padStart(2, '0')).join('');
   await store(env.DB).set(accountKey, {iv:hex(iv), data:hex(bytes)});
 }
@@ -31,7 +32,8 @@ export async function tiktokAccount(env) {
   try {
     const value = JSON.parse(row.value);
     const bytes = hex => new Uint8Array(hex.match(/../g).map(n => parseInt(n, 16)));
-    return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM', iv:bytes(value.iv), additionalData:encoder.encode(accountKey)}, await key(env), bytes(value.data))));
+    const account = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM', iv:bytes(value.iv), additionalData:encoder.encode(accountKey)}, await key(env), bytes(value.data))));
+    return account.clientKeyHash === await digest(env.TIKTOK_CLIENT_KEY) ? account : null;
   } catch { return null; }
 }
 
@@ -82,7 +84,8 @@ const connectClient = `const button=document.getElementById('connect');button.on
 
 export async function tiktokAuthRequest(request, env, {fetcher=fetch, now=Date.now}={}) {
   const url = new URL(request.url), db = store(env.DB);
-  if (url.pathname === '/tiktok/connect' && request.method === 'GET') return new Response(connectPage, {headers:htmlHeaders});
+  if (url.pathname === '/tiktok/connect' && request.method === 'GET') return new Response(env.TIKTOK_MODE==='sandbox'
+    ? connectPage.replace('<h1>Conectar TikTok</h1>','<h1>Conectar TikTok</h1><p><strong>Conexión de prueba · Sandbox</strong></p>') : connectPage, {headers:htmlHeaders});
   if (url.pathname === '/tiktok/connect.js' && request.method === 'GET') return new Response(connectClient, {headers:{...shareHeaders, 'Content-Type':'text/javascript; charset=utf-8'}});
   if (!tiktokConfigured(env)) return new Response('La conexión de TikTok aún no está configurada.', {status:503, headers:shareHeaders});
   if (url.pathname === '/tiktok/start' && request.method === 'POST') {

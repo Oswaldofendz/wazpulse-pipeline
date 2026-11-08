@@ -42,6 +42,24 @@ Referencias:
 
 ## Activación técnica pendiente
 
+El 8 de noviembre se instaló el archivo proporcionado por el propietario y
+se comprobó su contenido exacto por HTTP. La captura posterior de TikTok
+confirma que el prefijo de WaCapital aparece en Verified properties.
+La configuración privada prepara `TIKTOK_MODE=sandbox` y mantiene la carga
+apagada hasta guardar las claves de Sandbox.
+
+`node scripts/tiktok-setup.mjs` inicia un formulario local temporal en
+127.0.0.1, con enlace aleatorio, control de origen y Host. El propietario
+copia únicamente Client key y Client secret de Sandbox y pulsa guardar.
+El destino se muestra como el Worker de WaCapital en Cloudflare. Se guarda
+una copia cifrada con DPAPI de Windows en un archivo ignorado por Git; las
+claves se envían a Wrangler por entrada estándar, no por argumentos, chat
+o mensajes de estado. Después se prepara la conexión de prueba y se ofrece
+al propietario un enlace de autorización de 15 minutos. Ese paso no envía
+un carrusel ni publica. El formulario caduca en 30 minutos y nunca sirve los
+valores guardados. Cambiar de Client key invalida los tokens del cliente
+anterior, para separar Sandbox de una futura aplicación de producción.
+
 Se necesita una aplicación real en TikTok for Developers, Login Kit para
 web y Content Posting API con el permiso de carga `video.upload` autorizado.
 El propietario debe autorizar también `user.info.basic`, para identificar

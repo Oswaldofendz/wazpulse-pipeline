@@ -20,7 +20,8 @@ export async function tiktokDraftStatus(env, id, now=Date.now(), carousel) {
   if (!account || account.refreshing || account.refreshExpires <= now) return {state:'connection_required'};
   const row = await store(env.DB).first('SELECT state,error,account_id,fingerprint FROM tiktok_uploads WHERE story_id=?', id);
   if (row && carousel && row.fingerprint !== await fingerprint(carousel)) return {state:'material_changed'};
-  return {account:account.displayName, ...(row ? row.account_id === account.openId ? publicState(row) : {state:'account_changed'} : {state:'ready'})};
+  return {account:account.displayName, ...(env.TIKTOK_MODE==='sandbox'?{mode:'sandbox'}:{}),
+    ...(row ? row.account_id === account.openId ? publicState(row) : {state:'account_changed'} : {state:'ready'})};
 }
 
 async function downloadPng(env, fileId, fetcher) {

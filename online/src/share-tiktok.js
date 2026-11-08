@@ -97,6 +97,7 @@ const page = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta n
 *{box-sizing:border-box}body{margin:0;background:#090f17;color:#eef5fa;font:16px/1.5 system-ui,sans-serif}main{max-width:610px;margin:auto;padding:28px 20px 48px}.brand{color:#80ead0;font-size:.85rem;font-weight:800;letter-spacing:.15em}h1{line-height:1.16;margin:14px 0;font-size:1.85rem}p{color:#c1cdda}button,a.button{display:block;width:100%;min-height:48px;margin:10px 0;padding:12px;border:1px solid #3e556b;border-radius:12px;background:#152638;color:#eef5fa;text-decoration:none;text-align:center;font:inherit;font-weight:650;cursor:pointer}button.primary{border:0;background:#80ead0;color:#0b211d}button:disabled{opacity:.5;cursor:wait}#text{white-space:pre-wrap;overflow-wrap:anywhere;padding:16px;border:1px solid #2b4355;border-radius:12px;background:#142231}#slides{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}img{display:block;width:100%;aspect-ratio:9/16;border-radius:9px;background:#142231}figure{margin:0;text-align:center;font-size:.88rem}figure a{color:#80ead0;display:block;padding:8px 0}details{margin-top:19px}summary{font-weight:650;cursor:pointer}.small{font-size:.875rem}[hidden]{display:none!important}
 </style><script src="/share/tiktok/app.js" defer></script></head><body><main>
 <div class="brand">WACAPITAL</div><h1>Tu carrusel de TikTok</h1>
+<p id="sandbox" class="small" hidden><strong>Conexión de prueba · Sandbox</strong></p>
 <p id="lead">Prepara las cinco láminas y la descripción para terminar el post en TikTok.</p>
 <div id="status" role="status" aria-live="polite">Cargando el carrusel aprobado…</div><button id="retry" hidden>Volver a cargar</button>
 <section id="material" hidden>
@@ -124,6 +125,7 @@ let checks = 0;
 function draftState(result) {
   const state = result.state;
   if (data) data.tiktok = {...data.tiktok,...result};
+  get('sandbox').hidden = data?.tiktok?.mode !== 'sandbox';
   get('lead').textContent = ['setup_required','connection_required'].includes(state)
     ? 'Comparte las cinco láminas y el texto desde tu móvil. Revisa el orden y la descripción en TikTok.'
     : 'Envía las cinco láminas y la descripción a TikTok para terminar el post en la app.';

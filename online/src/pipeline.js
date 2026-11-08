@@ -113,7 +113,7 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
         '\n/rapido · /pendientes · /paquetes · /revisar ID · /paquete ID · /imagenes ID · /reenviar ID · /publicar ID · /tiktok ID · /auditoria · /redes ID');
     } else if (command === '/conectartiktok') {
       const url = await tiktokConnectUrl(env,now());
-      await bot.send(url ? 'Conecta la cuenta de WaCapital para recibir los carruseles aprobados en TikTok. El enlace caduca en 15 minutos.' :
+      await bot.send(url ? (env.TIKTOK_MODE==='sandbox'?'Conexión de prueba · Sandbox\n\n':'')+'Conecta la cuenta de WaCapital para recibir los carruseles aprobados en TikTok. El enlace caduca en 15 minutos.' :
         'La carga automática necesita activar la aplicación de WaCapital en TikTok for Developers. Mientras se completa, usa «Compartir en TikTok» en un carrusel aprobado para compartir o guardar las láminas desde el móvil.',
         url ? {inline_keyboard:[[{text:'Conectar cuenta de TikTok',url}]]} : undefined);
     } else if (command === '/auditoria') {

@@ -173,6 +173,15 @@ test('unconfigured upload stays disabled and keeps the manual sharing route',asy
   assert.match(await page.text(),/Compartir desde el móvil/);
 });
 
+test('sandbox tokens cannot be reused with another TikTok app and the test connection is labeled',async()=>{
+  const s=await fixture();s.env.TIKTOK_MODE='sandbox';await s.connect();
+  const data=await (await s.serve('data')).json();assert.equal(data.tiktok.mode,'sandbox');
+  const page=await s.auth(new Request(origin+'/tiktok/connect'));assert.match(await page.text(),/Conexión de prueba · Sandbox/);
+  s.env.TIKTOK_CLIENT_KEY='another-client';
+  assert.equal((await (await s.serve('data')).json()).tiktok.state,'connection_required');
+  await s.serve('draft');assert.equal(s.state.init.length,0);assert.equal(s.state.converted,0);
+});
+
 test('the daily cap blocks a sixth attempt before conversion and temporary JPEGs expire without losing upload history',async()=>{
   const s=await fixture();await s.connect();
   for(const char of ['a','c','d','e','f']) {

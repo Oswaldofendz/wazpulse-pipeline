@@ -32,7 +32,7 @@ export default {
     if(['/tiktok/connect','/tiktok/connect.js','/tiktok/start','/tiktok/callback'].includes(path))return tiktokAuthRequest(request,env);
     if(path==='/auditoria'||path==='/auditoria/app.js')return auditRequest(request);
     if (path === '/health' && request.method === 'GET') {
-      return json({service: 'wacapital-online', version: '0.6.0', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
+      return json({service: 'wacapital-online', version: '0.6.1', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
     }
     if (path === '/telegram/webhook' && request.method === 'POST') {
       if (!await secretMatches(request.headers.get('X-Telegram-Bot-Api-Secret-Token'), env.TELEGRAM_WEBHOOK_SECRET)) return json({error: 'Unauthorized'}, 401);
@@ -57,7 +57,7 @@ export default {
         const pipeline = createPipeline(env);
         if (path === '/admin/tiktok-status' && request.method === 'GET') {
           const account = await tiktokAccount(env);
-          return json({configured:tiktokConfigured(env),uploadEnabled:env.TIKTOK_UPLOAD_ENABLED==='true',
+          return json({mode:env.TIKTOK_MODE==='sandbox'?'sandbox':'production',configured:tiktokConfigured(env),uploadEnabled:env.TIKTOK_UPLOAD_ENABLED==='true',
             mediaVerified:env.TIKTOK_MEDIA_VERIFIED==='true',connected:Boolean(account && !account.refreshing && account.refreshExpires>Date.now()),
             uploads:await store(env.DB).all('SELECT story_id,state,error FROM tiktok_uploads ORDER BY created_at DESC LIMIT 5')});
         }
