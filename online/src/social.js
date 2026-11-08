@@ -2,6 +2,8 @@ import {coverSubtitle, xPublication, escapeHtml} from './publication.js';
 import {artDirection} from './art-direction.js';
 import {composePortraits,portraitCredits} from './portraits.js';
 import {marketGraph} from './market-graph.js';
+import {socialPlan,socialDescription} from './social-content.js';
+import {socialPoster} from './social-layout.js';
 
 const clean = value => String(value || '').replace(/[\u0000-\u001f]/g,' ').replace(/\s+/g,' ').trim();
 const segmenter = new Intl.Segmenter('es',{granularity:'sentence'});
@@ -9,12 +11,14 @@ const units = value => [...segmenter.segment(clean(value))].map(x=>x.segment.tri
 const short = (values, fallback) => values.flatMap(units).find(x=>x.length<=220) || fallback;
 
 export function tiktokCaption(story) {
+  if(story.social_kit){const saved=typeof story.social_kit==='string'?JSON.parse(story.social_kit):story.social_kit;if(saved?.tiktok?.caption)return saved.tiktok.caption;}
   const editorial = typeof story.editorial === 'string' ? JSON.parse(story.editorial) : story.editorial;
+  if(editorial.socialVersion===2&&editorial.socialCaption)return editorial.socialCaption;
   return [clean(editorial.headline), 'Qué pasó y qué falta por confirmar.', 'Fuente: ' + story.source_url].join('\n\n');
 }
 
 // Adapt only approved text. No additional LLM call or claim of full-article verification.
-export function socialKit(story) {
+function legacySocialKit(story) {
   const e = typeof story.editorial === 'string' ? JSON.parse(story.editorial) : story.editorial;
   const title=clean(e.headline), subtitle=coverSubtitle(e);
   const context=short([e.angle], 'La interpretación necesita contrastarse con la publicación original.');
@@ -45,12 +49,27 @@ export function socialKit(story) {
       needsEdit:words>105,voice:'Pendiente de grabación o de elegir una voz con cuota gratuita verificada.'}};
 }
 
+export function socialKit(story) {
+  if(story.social_kit){const saved=typeof story.social_kit==='string'?JSON.parse(story.social_kit):story.social_kit;if(![1,2].includes(saved?.version)||!Array.isArray(saved.slides))throw Error('Invalid saved social kit');return saved;}
+  const e=typeof story.editorial==='string'?JSON.parse(story.editorial):story.editorial;
+  return e.socialVersion===2?socialKitV2(story):legacySocialKit(story);
+}
+
+export function socialKitV2(story) {
+  const base=legacySocialKit(story),e=typeof story.editorial==='string'?JSON.parse(story.editorial):story.editorial;
+  const plan=story.editorial&&e.marketSnapshot?{slides:base.slides.map((s,i)=>({...s,visual:i?'news':'company'})),quality:{ready:true,issues:[]}}:socialPlan(story);
+  const caption=socialDescription(story,plan);
+  if(caption.length>3500)plan.quality={ready:false,issues:[...plan.quality.issues,'caption-needs-edit']};
+  return {...base,version:2,title:clean(e.socialTitle||plan.slides[0]?.title||base.title),...plan,
+    instagram:{...base.instagram,caption},tiktok:{...base.tiktok,caption}};
+}
+
 export function socialText(kit) {
   return ['# WaCapital · Borrador para otras redes',kit.title,'Referencia: '+kit.storyId,
     'Fecha de la noticia: '+kit.source.publishedAt,'Fuente: '+kit.source.url,kit.source.basis,
     'Requiere revisión. No se ha publicado nada. La prueba conserva la fecha original.',
     '## Ganchos alternativos',...kit.hooks.map(x=>x.type+': '+x.text),
-    '## Instagram · Cinco láminas',...kit.slides.map((x,i)=>(i+1)+'. '+x.title+'\n'+x.body),
+    '## Instagram · '+kit.slides.length+' láminas',...kit.slides.map((x,i)=>(i+1)+'. '+x.title+'\n'+x.body),
     '## Instagram · Pie de publicación',kit.instagram.caption,
     '## TikTok · Pie de publicación',kit.tiktok.caption,
     '## Reels / TikTok / Shorts · Guion',...kit.video.beats.map(x=>x.role.toUpperCase()+': '+x.text+'\nVisual: '+x.visual),
@@ -65,7 +84,8 @@ export function socialDimensions(platform) {
 }
 
 export function socialHtml(kit,image,index,platform) {
-  if(kit.marketSnapshot)return marketGraph(kit.marketSnapshot,{title:kit.title,platform,index});
+  if(kit.marketSnapshot)return marketGraph(kit.marketSnapshot,{title:kit.title,platform,index,safe:kit.version===2});
+  if(kit.version===2)return socialPoster(kit,image,index,platform);
   const {height}=socialDimensions(platform), slide=kit.slides[index];
   if (!slide || !Number.isInteger(index) || !/^[A-Za-z0-9+/=]+$/.test(image) || image.length>2_400_000) throw new Error('Invalid social asset');
   const cover=index===0, tall=height===1920;

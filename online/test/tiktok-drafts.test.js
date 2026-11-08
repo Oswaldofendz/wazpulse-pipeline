@@ -61,9 +61,9 @@ async function fixture() {
   const serve=(route,extra={},headers={})=>shareTikTokRequest(new Request(origin+'/share/tiktok/'+route,{method:'POST',headers,body:JSON.stringify({...payload,...extra})}),s.env,{
     ...options,allowStorage:async()=>true,convert:async(_env,assets)=>{
       state.converted++;
-      assert.deepEqual(assets.map(a=>a.file_id),[0,1,2,3,4].map(i=>'file-'+i));
+      assert.deepEqual(assets.map(a=>a.file_id),Array.from({length:assets.length},(_,i)=>'file-'+i));
       if(state.convertFailed)throw Error('browser unavailable');
-      return Array.from({length:5},()=>jpeg);
+      return Array.from({length:assets.length},()=>jpeg);
     }
   });
   return {...s,state,auth,begin,complete,connect,serve,options};
@@ -208,4 +208,22 @@ test('URL-prefix verification serves only the configured text file',async()=>{
   assert.equal((await request('another.txt')).status,404);
   s.env.TIKTOK_VERIFICATION_FILENAME='../private.txt';
   assert.equal((await request('../private.txt')).status,404);
+});
+
+test('three-image revisions use their frozen caption and title, and retain signed access to those exact JPEGs',async()=>{
+  const s=await fixture();await s.connect();
+  const kit={version:2,title:'Tres datos de prueba',slides:[{},{},{}],tiktok:{caption:'Tres hechos de prueba. Fuente: https://www.coindesk.com/news/fixture'}};
+  s.db.native.prepare('INSERT INTO runtime(key,value) VALUES(?,?)').run('channel_social_kit:'+id,JSON.stringify(kit));
+  s.db.native.exec('DELETE FROM channel_assets WHERE position>=3');
+  const link=new URL(await shareTikTokUrl(s.env,id,NOW)),[,expires,sig]=link.hash.slice(1).split('.'),access={expires:Number(expires),sig};
+  const data=await (await s.serve('data',access)).json();assert.equal(data.filenames.length,3);assert.equal(data.text,kit.tiktok.caption);
+  assert.equal((await (await s.serve('draft',access)).json()).state,'processing');
+  const sent=s.state.init[0].body;
+  assert.deepEqual(sent.post_info,{description:kit.tiktok.caption,title:kit.title});assert.equal(sent.source_info.photo_images.length,3);
+  const image=await tiktokMediaRequest(new Request(sent.source_info.photo_images[2]),s.env,s.options);assert.equal(image.status,200);
+  kit.tiktok.caption='Texto diferente que no se ha aprobado';
+  s.db.native.prepare('UPDATE runtime SET value=? WHERE key=?').run(JSON.stringify(kit),'channel_social_kit:'+id);
+  assert.equal((await s.serve('data',access)).status,401);
+  assert.equal((await tiktokMediaRequest(new Request(sent.source_info.photo_images[2]),s.env,s.options)).status,401);
+  assert.equal(s.state.init.length,1);
 });

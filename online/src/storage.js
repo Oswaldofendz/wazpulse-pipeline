@@ -10,7 +10,7 @@ const previewClock = 'retention_preview:';
 const imageClock = 'retention_image:';
 const complete = alias => `(SELECT COUNT(*) FROM visual_assets a WHERE a.story_id=${alias}.story_id AND a.delivery='sent' AND length(a.file_id)>0 AND a.png IS NULL)=6`;
 const born = alias => `CASE WHEN json_valid(${alias}.value) THEN CASE WHEN json_type(${alias}.value)='integer' THEN CAST(${alias}.value AS INTEGER) ELSE NULL END ELSE NULL END`;
-const channelsComplete = alias => `EXISTS(SELECT 1 FROM channel_jobs j WHERE j.story_id=${alias}.story_id) AND NOT EXISTS(SELECT 1 FROM channel_jobs j WHERE j.story_id=${alias}.story_id AND (j.state NOT IN ('review','approved','rejected') OR j.delivery!='sent' OR (SELECT COUNT(*) FROM channel_assets a WHERE a.story_id=j.story_id AND a.platform=j.platform AND length(a.file_id)>0 AND a.png IS NULL)!=CASE WHEN j.platform='x' THEN 1 ELSE 5 END))`;
+const channelsComplete = alias => `EXISTS(SELECT 1 FROM channel_jobs j WHERE j.story_id=${alias}.story_id) AND NOT EXISTS(SELECT 1 FROM channel_jobs j WHERE j.story_id=${alias}.story_id AND (j.state NOT IN ('review','approved','rejected') OR j.delivery!='sent' OR (SELECT COUNT(*) FROM channel_assets a WHERE a.story_id=j.story_id AND a.platform=j.platform AND length(a.file_id)>0 AND a.png IS NULL)!=CASE WHEN j.platform='x' THEN 1 ELSE COALESCE((SELECT CASE WHEN json_valid(value) THEN json_array_length(value,'$.slides') END FROM runtime WHERE key='channel_social_kit:'||j.story_id),5) END))`;
 
 export function createStorage(env, {fetcher = fetch, now = Date.now} = {}) {
   const db = store(env.DB);

@@ -15,7 +15,8 @@ const pageHeaders = {
 async function approvedCarousel(env, id) {
   const db = store(env.DB);
   const story = await db.first(`
-    SELECT s.*, (SELECT manifest FROM channel_images WHERE story_id=s.id) AS image_manifest
+    SELECT s.*, (SELECT manifest FROM channel_images WHERE story_id=s.id) AS image_manifest,
+      (SELECT value FROM runtime WHERE key='channel_social_kit:'||s.id) AS social_kit
     FROM stories s JOIN channel_jobs j ON j.story_id = s.id
     WHERE s.id = ? AND s.state = 'approved' AND j.platform = 'tiktok'
       AND j.state = 'approved' AND j.delivery = 'sent'
@@ -25,15 +26,17 @@ async function approvedCarousel(env, id) {
     SELECT position, file_id, filename FROM channel_assets
     WHERE story_id = ? AND platform = 'tiktok' ORDER BY position LIMIT 6
   `, id);
-  if (assets.length !== 5 || assets.some((asset, position) => asset.position !== position ||
+  const saved=story.social_kit?JSON.parse(story.social_kit):null,count=saved?saved.slides?.length:5;
+  if (!Number.isInteger(count)||count<3||count>5||assets.length !== count || assets.some((asset, position) => asset.position !== position ||
       !asset.file_id || !/^[\w-]{1,120}\.png$/i.test(asset.filename))) return null;
   const kind = story.image_manifest ? JSON.parse(story.image_manifest).art?.mediaKind : null;
-  return {story, assets, text: tiktokCaption(story), isAigc:!['market-chart','official-portraits'].includes(kind)};
+  const title=saved?.version===2&&saved.title?.length<=90?saved.title:null;
+  return {story, assets, text: tiktokCaption(story), ...(title?{title}:{}),isAigc:!['market-chart','official-portraits'].includes(kind)};
 }
 
 function sign(env, id, expires, carousel) {
   const files = carousel.assets.map(({position, file_id, filename}) => [position, file_id, filename]);
-  return shareSignature(env, ['wacapital-share-tiktok-v1', id, expires, JSON.stringify(files), carousel.text]);
+  return shareSignature(env, ['wacapital-share-tiktok-v1', id, expires, JSON.stringify(files), carousel.text,...(carousel.title?[carousel.title]:[])]);
 }
 
 export async function shareTikTokUrl(env, id, now = Date.now()) {
@@ -98,7 +101,7 @@ const page = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta n
 </style><script src="/share/tiktok/app.js" defer></script></head><body><main>
 <div class="brand">WACAPITAL</div><h1>Tu carrusel de TikTok</h1>
 <p id="sandbox" class="small" hidden><strong>Conexión de prueba · Sandbox</strong></p>
-<p id="lead">Prepara las cinco láminas y la descripción para terminar el post en TikTok.</p>
+<p id="lead">Prepara las láminas y la descripción para terminar el post en TikTok.</p>
 <div id="status" role="status" aria-live="polite">Cargando el carrusel aprobado…</div><button id="retry" hidden>Volver a cargar</button>
 <section id="material" hidden>
 <section id="direct" hidden><p id="account"></p><button class="primary" id="draft">Enviar borrador a TikTok</button><button id="check" hidden>Comprobar envío</button><a class="button" id="openTikTok" href="https://www.tiktok.com/" target="_blank" rel="noreferrer noopener" hidden>Abrir TikTok · ver Bandeja de entrada</a></section>
@@ -109,7 +112,7 @@ const page = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta n
 <details id="help"><summary>Guardar y cargar en TikTok</summary>
 <p>Si TikTok no aparece, comparte solo las láminas y elige guardarlas en Fotos cuando el móvil lo ofrezca. También puedes guardar cada una desde la vista de arriba.</p>
 <button id="photos" disabled>Compartir solo las láminas</button>
-<p>En TikTok pulsa <strong>+</strong>, carga las cinco imágenes en orden y pega la descripción copiada. Si Telegram no permite compartir, abre esta página en Safari o Chrome.</p>
+<p>En TikTok pulsa <strong>+</strong>, carga las imágenes en orden y pega la descripción copiada. Si Telegram no permite compartir, abre esta página en Safari o Chrome.</p>
 </details><p class="small">Enlace privado de revisión. Caduca en siete días.</p></section>
 </main></body></html>`;
 
@@ -127,8 +130,8 @@ function draftState(result) {
   if (data) data.tiktok = {...data.tiktok,...result};
   get('sandbox').hidden = data?.tiktok?.mode !== 'sandbox';
   get('lead').textContent = ['setup_required','connection_required'].includes(state)
-    ? 'Comparte las cinco láminas y el texto desde tu móvil. Revisa el orden y la descripción en TikTok.'
-    : 'Envía las cinco láminas y la descripción a TikTok para terminar el post en la app.';
+    ? 'Comparte las '+data.filenames.length+' láminas y el texto desde tu móvil. Revisa el orden y la descripción en TikTok.'
+    : 'Envía las '+data.filenames.length+' láminas y la descripción a TikTok para terminar el post en la app.';
   get('direct').hidden = ['setup_required','connection_required'].includes(state);
   get('account').textContent = result.account ? 'Cuenta conectada: ' + result.account : get('account').textContent;
   get('draft').hidden = state !== 'ready';
@@ -137,11 +140,11 @@ function draftState(result) {
   const messages = {
     setup_required:'La carga automática está pendiente de activar la conexión oficial con TikTok. Puedes compartir desde el móvil o guardar las láminas.',
     connection_required:'Falta conectar o renovar la cuenta. Envía /conectartiktok al bot de Telegram.',
-    ready:'Las cinco láminas y la descripción se enviarán como borrador. En TikTok, abre la notificación de la Bandeja de entrada para editar y publicar.',
+    ready:'Las '+data.filenames.length+' láminas y la descripción se enviarán como borrador. En TikTok, abre la notificación de la Bandeja de entrada para editar y publicar.',
     busy:'La conexión de TikTok está atendiendo otro envío. Comprueba el estado en unos segundos.',
-    preparing:'Preparando las cinco láminas para TikTok. El envío ya está en curso.',
+    preparing:'Preparando las láminas para TikTok. El envío ya está en curso.',
     submitting:'Enviando el borrador a TikTok…',
-    processing:'TikTok está procesando las cinco láminas. Puedes comprobar el envío sin cargarlo otra vez.',
+    processing:'TikTok está procesando las láminas. Puedes comprobar el envío sin cargarlo otra vez.',
     inbox:'TikTok confirmó la entrega. Abre la app → Bandeja de entrada → notificación del borrador para continuar con las láminas y la descripción cargadas.',
     published:'TikTok indica que este material ya se publicó desde su app. Puedes revisar la publicación en tu cuenta.',
     uncertain:'No se pudo confirmar el envío. Revisa la Bandeja de entrada de TikTok antes de cargarlo manualmente.',
@@ -185,7 +188,7 @@ function canShare(payload) {
   catch { return false; }
 }
 function enableSharing() {
-  const ready = files.length === 5 && canShare({files});
+  const ready = files.length >=3 && files.length === data?.filenames.length && canShare({files});
   get('share').disabled = get('photos').disabled = !ready;
   return ready;
 }
@@ -216,7 +219,7 @@ async function load() {
       const figure = document.createElement('figure');
       const image = document.createElement('img');
       image.src = url;
-      image.alt = 'Lámina ' + (index + 1) + ' de 5';
+      image.alt = 'Lámina ' + (index + 1) + ' de ' + data.filenames.length;
       const save = document.createElement('a');
       save.href = url;
       save.download = file.name;
@@ -224,7 +227,7 @@ async function load() {
       figure.append(image, save);
       get('slides').append(figure);
     }
-    if (enableSharing()) status.textContent = 'Cinco láminas listas. Abre el menú y elige TikTok si está disponible.';
+    if (enableSharing()) status.textContent = data.filenames.length+' láminas listas. Abre el menú y elige TikTok si está disponible.';
     else {
       status.textContent = 'Guarda las láminas aquí o abre esta página en Safari o Chrome para compartirlas juntas.';
       get('help').open = true;
@@ -237,7 +240,7 @@ async function load() {
 }
 
 async function share(withText) {
-  if (files.length !== 5 || !canShare({files})) return;
+  if (files.length <3 || files.length!==data.filenames.length || !canShare({files})) return;
   const combined = {files, text: data.text};
   const payload = withText && canShare(combined) ? combined : {files};
   try {
@@ -245,7 +248,7 @@ async function share(withText) {
     const pending = navigator.share(payload);
     get('share').disabled = get('photos').disabled = true;
     await pending;
-    status.textContent = 'En TikTok, comprueba las cinco láminas y pega la descripción si quedó vacía.';
+    status.textContent = 'En TikTok, comprueba las láminas y pega la descripción si quedó vacía.';
   } catch (error) {
     status.textContent = error.name === 'AbortError' ? 'Puedes volver a compartir cuando quieras.' : 'Usa Safari, Chrome o la opción de guardar las láminas.';
     get('help').open = true;

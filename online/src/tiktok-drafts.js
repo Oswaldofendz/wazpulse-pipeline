@@ -9,7 +9,7 @@ import {tiktokCaption} from './social.js';
 
 const HOUR = 3_600_000;
 const configured = env => tiktokConfigured(env) && env.TIKTOK_UPLOAD_ENABLED === 'true' && env.TIKTOK_MEDIA_VERIFIED === 'true';
-const fingerprint = carousel => digest(JSON.stringify([carousel.assets.map(a => [a.position,a.file_id,a.filename]),carousel.text]));
+const fingerprint = carousel => digest(JSON.stringify([carousel.assets.map(a => [a.position,a.file_id,a.filename]),carousel.text,...(carousel.title?[carousel.title]:[])]));
 const mediaPath = '/tiktok/media/';
 const publicState = row => ({state:row.state, error:row.error || null});
 const safeCode = value => /^[a-z_]{1,80}$/.test(value || '') ? value : 'unavailable';
@@ -72,8 +72,9 @@ export async function tiktokMediaRequest(request, env, {now=Date.now}={}) {
   if (!row || row.media_expires !== expires || !['submitting','processing','inbox','published','uncertain'].includes(row.state) ||
       !matchesShareSignature(await shareSignature(env,['wacapital-tiktok-media-v1',id,row.fingerprint,Number(position),expires]),sig)) return new Response('Enlace no válido',{status:401,headers:shareHeaders});
   const currentAssets = await db.all("SELECT position,file_id,filename FROM channel_assets WHERE story_id=? AND platform='tiktok' ORDER BY position",id);
-  const current = await db.first('SELECT editorial,source_url FROM stories WHERE id=?',id);
-  if (await fingerprint({assets:currentAssets,text:tiktokCaption(current)}) !== row.fingerprint) return new Response('Material modificado',{status:401,headers:shareHeaders});
+  const current = await db.first("SELECT editorial,source_url,(SELECT value FROM runtime WHERE key='channel_social_kit:'||stories.id) AS social_kit FROM stories WHERE id=?",id);
+  const kit=current.social_kit?JSON.parse(current.social_kit):null,title=kit?.version===2&&kit.title?.length<=90?kit.title:null;
+  if (await fingerprint({assets:currentAssets,text:tiktokCaption(current),...(title?{title}:{})}) !== row.fingerprint) return new Response('Material modificado',{status:401,headers:shareHeaders});
   const asset = await db.first('SELECT jpeg FROM tiktok_upload_assets WHERE story_id=? AND position=?',id,Number(position));
   if (!asset) return new Response('No encontrado',{status:404,headers:shareHeaders});
   const bytes = new Uint8Array(asset.jpeg);
@@ -104,19 +105,19 @@ export async function submitTikTokDraft(env, id, carousel, {fetcher=fetch, now=D
     const allowed = allowStorage ? await allowStorage() : await createStorage(env,{fetcher,now}).allow(10_000_000);
     if (!allowed) throw Error('Storage unavailable');
     const bytes = await convert(env,carousel.assets,fetcher);
-    if (bytes.length !== 5 || bytes.some(b => b.length<4 || b.length>1_900_000 || b[0]!==255 || b[1]!==216 || b.at(-2)!==255 || b.at(-1)!==217)) throw Error('Invalid JPEG');
+    if (bytes.length<3||bytes.length>5||bytes.length !== carousel.assets.length || bytes.some(b => b.length<4 || b.length>1_900_000 || b[0]!==255 || b[1]!==216 || b.at(-2)!==255 || b.at(-1)!==217)) throw Error('Invalid JPEG');
     await env.DB.batch(bytes.map((b,position) => env.DB.prepare('INSERT INTO tiktok_upload_assets(story_id,position,jpeg) VALUES(?,?,?)').bind(id,position,b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength))));
     // Approval and the snapshot must still match after image preparation.
-    const current = await db.first("SELECT s.editorial FROM stories s JOIN channel_jobs j ON j.story_id=s.id AND j.platform='tiktok' WHERE s.id=? AND s.state='approved' AND j.state='approved' AND j.delivery='sent'",id);
+    const current = await db.first("SELECT s.editorial,(SELECT value FROM runtime WHERE key='channel_social_kit:'||s.id) AS social_kit FROM stories s JOIN channel_jobs j ON j.story_id=s.id AND j.platform='tiktok' WHERE s.id=? AND s.state='approved' AND j.state='approved' AND j.delivery='sent'",id);
     const assets = await db.all("SELECT position,file_id,filename FROM channel_assets WHERE story_id=? AND platform='tiktok' ORDER BY position",id);
-    if (!current || current.editorial !== carousel.story.editorial || await fingerprint({assets,text:carousel.text}) !== hash) throw Error('Approval changed');
+    if (!current || current.editorial !== carousel.story.editorial || (current.social_kit||null)!==(carousel.story.social_kit||null) || await fingerprint({...carousel,assets}) !== hash) throw Error('Approval changed');
     await db.run("UPDATE tiktok_uploads SET state='submitting',updated_at=? WHERE story_id=?",now(),id);
     const images = await Promise.all(bytes.map((_,position) => mediaUrl(env,claimed,position)));
     initializing = true;
     const response = await fetcher('https://open.tiktokapis.com/v2/post/publish/content/init/', {
       method:'POST',redirect:'manual',signal:AbortSignal.timeout(20_000),
       headers:{Authorization:'Bearer '+account.accessToken,'Content-Type':'application/json; charset=UTF-8'},
-      body:JSON.stringify({post_mode:'MEDIA_UPLOAD',media_type:'PHOTO',post_info:{description:carousel.text},
+      body:JSON.stringify({post_mode:'MEDIA_UPLOAD',media_type:'PHOTO',post_info:{description:carousel.text,...(carousel.title?{title:carousel.title}:{})},
         source_info:{source:'PULL_FROM_URL',photo_cover_index:0,photo_images:images},is_aigc:carousel.isAigc})
     });
     const result = JSON.parse(await readBounded(response,20_000));

@@ -7,6 +7,11 @@ const themes = {
   daylight: {accent: '#7dd3fc', rule: '#38bdf8', lighting: 'natural window light, warm ivory surfaces and ink-blue shadows'}
 };
 const scenes = {
+  breach: [
+    'a fractured anonymous payment card with a gold chip, translucent customer identity records and linked wallet nodes escaping as red data fragments, conceptual customer data breach',
+    'anonymous payment card, house-address record and digital wallet outline linked by exposed red data paths, editorial illustration of personal information exposure',
+    'a cracked customer-data vault surrounded by unbranded payment cards and anonymous identity records, editorial illustration of a data leak'
+  ],
   politics: [
     'two opposing press lecterns facing each other in a divided parliamentary chamber, editorial political disagreement',
     'a split diplomatic meeting table with two empty chairs facing each other, conceptual political tension',
@@ -63,6 +68,7 @@ function eventOf(text) {
     if (/\bnot\b|\bnever\b|\bno\b|\bwon.t\b|\bcannot\b|\bplans?\b|\bmay\b|\bcould\b|\bexpects?\b|\bwill\b|\bplanea\w*|\bpodria\b|\bprev[eé]\w*/.test(text)) return 'interruption';
     return 'recovery';
   }
+  if(/\bbreach\b|\bfiltracion\b|data leak|\bexpone\b|\bexpos\w*/.test(text)&&/data|datos|card|tarjeta|wallet|cartera|address|domicilio/.test(text))return 'breach';
   if (/\bbug\b|\boutage\b|\bhalt\w*|\bpaus\w*|\bfrena\w*|\binterrup\w*|\bvulnerab\w*/.test(text)) return 'interruption';
   if (/\bwithdraw\w*|\boutflows?\b|\bretiros?\b|\bretiran\b|salidas? de fondos/.test(text)) return 'outflow';
   if (/\bhack\w*|\bstolen\b|\btheft\b|\bcyber\w*|\bbreach\b|\brobo\w*/.test(text)) return 'security';

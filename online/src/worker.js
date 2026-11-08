@@ -11,6 +11,7 @@ import {tiktokAccount, tiktokAuthRequest, tiktokConfigured} from './tiktok-auth.
 import {tiktokMediaRequest} from './tiktok-drafts.js';
 import {auditRequest} from './audit.js';
 import {createFast} from './fast.js';
+import {socialRevisions} from './social-revision.js';
 
 const json = (data, status = 200) => Response.json(data, {status, headers: {'Cache-Control': 'no-store'}});
 const active = env => env.PIPELINE_ENABLED === 'true';
@@ -32,7 +33,7 @@ export default {
     if(['/tiktok/connect','/tiktok/connect.js','/tiktok/start','/tiktok/callback'].includes(path))return tiktokAuthRequest(request,env);
     if(path==='/auditoria'||path==='/auditoria/app.js')return auditRequest(request);
     if (path === '/health' && request.method === 'GET') {
-      return json({service: 'wacapital-online', version: '0.6.1', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
+      return json({service: 'wacapital-online', version: '0.7.0', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
     }
     if (path === '/telegram/webhook' && request.method === 'POST') {
       if (!await secretMatches(request.headers.get('X-Telegram-Bot-Api-Secret-Token'), env.TELEGRAM_WEBHOOK_SECRET)) return json({error: 'Unauthorized'}, 401);
@@ -55,6 +56,12 @@ export default {
       if (!env.DB) return json({error: 'Database not configured'}, 503);
       try {
         const pipeline = createPipeline(env);
+        const revision=path.match(/^\/admin\/social-revision\/([a-f0-9]{32})(?:\/(ready|[0-4]))?$/);
+        if(revision&&request.method==='POST'){
+          const service=socialRevisions(env),[,id,action]=revision;
+          const result=action==='ready'?await service.ready(id):action?await service.asset(id,Number(action),request):await service.create(id,JSON.parse(await readBounded(request,2_500_000)));
+          return json(result,result.status||200);
+        }
         if (path === '/admin/tiktok-status' && request.method === 'GET') {
           const account = await tiktokAccount(env);
           return json({mode:env.TIKTOK_MODE==='sandbox'?'sandbox':'production',configured:tiktokConfigured(env),uploadEnabled:env.TIKTOK_UPLOAD_ENABLED==='true',
