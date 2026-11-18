@@ -72,7 +72,7 @@ export async function tiktokMediaRequest(request, env, {now=Date.now}={}) {
   if (!row || row.media_expires !== expires || !['submitting','processing','inbox','published','uncertain'].includes(row.state) ||
       !matchesShareSignature(await shareSignature(env,['wacapital-tiktok-media-v1',id,row.fingerprint,Number(position),expires]),sig)) return new Response('Enlace no válido',{status:401,headers:shareHeaders});
   const currentAssets = await db.all("SELECT position,file_id,filename FROM channel_assets WHERE story_id=? AND platform='tiktok' ORDER BY position",id);
-  const current = await db.first("SELECT editorial,source_url,(SELECT value FROM runtime WHERE key='channel_social_kit:'||stories.id) AS social_kit FROM stories WHERE id=?",id);
+  const current = await db.first("SELECT editorial,source_url,COALESCE((SELECT value FROM runtime WHERE key='channel_social_kit:'||stories.id||':tiktok'),(SELECT value FROM runtime WHERE key='channel_social_kit:'||stories.id)) AS social_kit FROM stories WHERE id=?",id);
   const kit=current.social_kit?JSON.parse(current.social_kit):null,title=kit?.version===2&&kit.title?.length<=90?kit.title:null;
   if (await fingerprint({assets:currentAssets,text:tiktokCaption(current),...(title?{title}:{})}) !== row.fingerprint) return new Response('Material modificado',{status:401,headers:shareHeaders});
   const asset = await db.first('SELECT jpeg FROM tiktok_upload_assets WHERE story_id=? AND position=?',id,Number(position));
@@ -108,7 +108,7 @@ export async function submitTikTokDraft(env, id, carousel, {fetcher=fetch, now=D
     if (bytes.length<3||bytes.length>5||bytes.length !== carousel.assets.length || bytes.some(b => b.length<4 || b.length>1_900_000 || b[0]!==255 || b[1]!==216 || b.at(-2)!==255 || b.at(-1)!==217)) throw Error('Invalid JPEG');
     await env.DB.batch(bytes.map((b,position) => env.DB.prepare('INSERT INTO tiktok_upload_assets(story_id,position,jpeg) VALUES(?,?,?)').bind(id,position,b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength))));
     // Approval and the snapshot must still match after image preparation.
-    const current = await db.first("SELECT s.editorial,(SELECT value FROM runtime WHERE key='channel_social_kit:'||s.id) AS social_kit FROM stories s JOIN channel_jobs j ON j.story_id=s.id AND j.platform='tiktok' WHERE s.id=? AND s.state='approved' AND j.state='approved' AND j.delivery='sent'",id);
+    const current = await db.first("SELECT s.editorial,COALESCE((SELECT value FROM runtime WHERE key='channel_social_kit:'||s.id||':tiktok'),(SELECT value FROM runtime WHERE key='channel_social_kit:'||s.id)) AS social_kit FROM stories s JOIN channel_jobs j ON j.story_id=s.id AND j.platform='tiktok' WHERE s.id=? AND s.state='approved' AND j.state='approved' AND j.delivery='sent'",id);
     const assets = await db.all("SELECT position,file_id,filename FROM channel_assets WHERE story_id=? AND platform='tiktok' ORDER BY position",id);
     if (!current || current.editorial !== carousel.story.editorial || (current.social_kit||null)!==(carousel.story.social_kit||null) || await fingerprint({...carousel,assets}) !== hash) throw Error('Approval changed');
     await db.run("UPDATE tiktok_uploads SET state='submitting',updated_at=? WHERE story_id=?",now(),id);

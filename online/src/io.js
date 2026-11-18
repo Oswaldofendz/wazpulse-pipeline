@@ -1,8 +1,10 @@
 export class ServiceError extends Error {
-  constructor(service, status = 0) {
+  constructor(service, status = 0, details = {}) {
     super(service + ' unavailable');
     this.service = service;
     this.status = status;
+    this.rejected = details.rejected === true;
+    this.retryAfter = Number.isSafeInteger(details.retryAfter) ? Math.max(1,Math.min(details.retryAfter,3600)) : 60;
   }
 }
 
@@ -50,6 +52,12 @@ export function network(fetcher = fetch) {
             if (data.ok === false && data.error_code === 400 && /message is not modified/i.test(data.description || '')) return data;
           } catch {}
         }
+        if (response.status >= 400 && response.status < 500) {
+          try {
+            const data = JSON.parse(await readBounded(response,16_000));
+            if(data.ok===false&&data.error_code===response.status)throw new ServiceError('telegram-rejected',response.status,{rejected:true,retryAfter:data.parameters?.retry_after});
+          } catch(error) { if(error instanceof ServiceError&&error.rejected)throw error; }
+        }
         throw new ServiceError('http', response.status);
       }
       try { return JSON.parse(await readBounded(response)); }
@@ -69,7 +77,7 @@ export function telegram(env, net) {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
     }, timeout, 2_100_000, editing);
     if(!data.ok && editing && data.error_code===400 && /message is not modified/i.test(data.description||''))return {message_id:body.message_id};
-    if (!data.ok) throw new ServiceError('telegram', data.error_code || 0);
+    if (!data.ok) throw new ServiceError('telegram', data.error_code || 0,{rejected:true,retryAfter:data.parameters?.retry_after});
     return data.result;
   }
   return {
@@ -98,7 +106,7 @@ export function telegram(env, net) {
       form.set('media',JSON.stringify(assets.map((asset,i)=>({type:'document',media:'attach://image'+i,...(i===0?{caption}:{} )}))));
       for(const [i,asset] of assets.entries())form.set('image'+i,new Blob([asset.png],{type:'image/png'}),asset.filename);
       const result=await net.json(url('sendMediaGroup'),{method:'POST',body:form},45_000,10_000_000);
-      if(!result.ok)throw new ServiceError('telegram-album',result.error_code||0);
+      if(!result.ok)throw new ServiceError('telegram-album',result.error_code||0,{rejected:true,retryAfter:result.parameters?.retry_after});
       return result.result;
     },
     async imageDocument(image, filename, caption) {
@@ -108,7 +116,7 @@ export function telegram(env, net) {
       if (typeof image === 'string') form.set('document', image);
       else form.set('document', new Blob([image], {type: 'image/png'}), filename);
       const data = await net.json(url('sendDocument'), {method: 'POST', body: form}, 45_000);
-      if (!data.ok) throw new ServiceError('telegram', data.error_code || 0);
+      if (!data.ok) throw new ServiceError('telegram', data.error_code || 0,{rejected:true,retryAfter:data.parameters?.retry_after});
       return data.result;
     },
     async download(fileId) {

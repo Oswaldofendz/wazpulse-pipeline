@@ -43,22 +43,32 @@ const scenes = {
     'two distinct industrial production paths meeting at one junction, conceptual business combination'
   ],
   policy: [
-    'a low-angle exterior of monumental central-bank-style stone architecture, anonymous and unbranded',
-    'a close view of an unmarked brass balance on a policy desk with anonymous boardroom silhouettes beyond',
-    'an overhead editorial still life of a blank calendar, plain financial tokens and a closed policy folder'
+    'an exterior establishing view of the central bank or regulator named in the article',
+    'an editorial view of the relevant central bank or regulatory institution, focusing on its setting',
+    'a deliberate architectural study of the policy institution involved in the action described'
   ],
   results: [
-    'an anonymous analyst examining physical production samples and a blank financial ledger',
+    'a close editorial view of the named company’s product or operation mentioned in the article',
     'a panoramic view of an industry-relevant production floor with a single sharply focused foreground object',
-    'an overhead still life of industry-relevant products on a financial planning desk'
+    'an environmental photograph-style composition focused on the named company’s business activity'
   ],
   market: [
     'a close view of an industry-relevant physical subject, dramatic shallow depth of field',
     'a wide environmental view of the industry relevant to the source, with one strong foreground focal subject',
-    'an overhead editorial still life of objects relevant to the asset or business in the source'
+    'an editorial close-up of a concrete place, product or action explicitly described in the source'
   ]
 };
 const normal = text => String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+function headlinePriceMove(text) {
+  const headline = normal(text).replace(/^[^\p{L}\p{N}]+/u, '').replace(/\s+/g, ' ');
+  const subject = /^(?:(?:el|la|las|los) )?(?:(?:precio de|acciones de|shares of|price of) )?(bitcoin|btc|ethereum|ether|eth|solana|sol|xrp|nvidia|nvda|tesla|tsla|nasdaq|s&p\s*500|gold|oro|oil|petroleo)\b(?:['’]s)?(?: (?:price|shares|stock|futures|cotizacion))?(?: (?:se|hoy|sharply|nearly|briefly|ligeramente)){0,3} /.exec(headline);
+  if (!subject) return null;
+  const action = headline.slice(subject[0].length);
+  if (/^falls? short\b/.test(action)) return null;
+  if (/^(?:slips?|falls?|drops?|tumbles?|plunges?|sinks?|slides?|retreats?|declines?|dips?|loses?|cae|baja|retrocede|desploma|hunde|cede|pierde)\b/.test(action)) return {asset: subject[1], direction: 'down'};
+  if (/^(?:rises?|gains?|jumps?|surges?|rall(?:y|ies)|climbs?|rebounds?|recovers?|sube|avanza|rebota|repunta|recupera|gana)\b/.test(action)) return {asset: subject[1], direction: 'up'};
+  return null;
+}
 function eventOf(text) {
   if (/\btrump\b|\bvance\b|\belection\w*|\belectoral\w*|\bpresident\w*|\bwhite house\b|\bcasa blanca\b|\bdiplomac\w*|\biran\b|\bwar\b|\bguerra\b/.test(text) &&
       !/\bbitcoin\b|\bbtc\b|\bethereum\b|\bcrypto\w*|\bcripto\w*/.test(text)) return 'politics';
@@ -90,10 +100,15 @@ function pick(items, seed, recent) {
 
 export function artDirection(story, recent = []) {
   // The headline takes precedence: "reopens after hack" is a recovery, not a theft scene.
-  const event = eventOf(normal(story.title)) || eventOf(normal(story.snippet)) || 'market';
+  const movement = headlinePriceMove(story.title);
+  const event = movement ? 'price-' + movement.direction : eventOf(normal(story.title)) || eventOf(normal(story.snippet)) || 'market';
   const seed = hash(String(story.id || story.source_url || '') + '|' + story.title);
   const prior = recent.map(brief => brief?.art).filter(Boolean).slice(0, 2);
-  const sceneIds = scenes[event].map((_, i) => event + '-' + i);
+  const choices = movement ? [
+    'Make ' + movement.asset + ' the main subject. Show ' + (movement.direction === 'down' ? 'descending red candlestick shapes and a falling line' : 'ascending green candlestick shapes and a rising line') +
+    ' as an illustrative market motif, with no axes, ticks, quotes or numbers. Keep background news secondary.'
+  ] : scenes[event];
+  const sceneIds = choices.map((_, i) => event + '-' + i);
   const sceneId = pick(sceneIds, seed, prior.map(x => x.sceneId));
   const theme = pick(Object.keys(themes), seed >>> 3, prior.map(x => x.theme));
   const layout = pick(['poster', 'masthead', 'split'], seed >>> 6, prior.map(x => x.layout));
@@ -103,7 +118,8 @@ export function artDirection(story, recent = []) {
     /critique|critic\w*|tightrope|rompe|ruptura|enfrent\w*|versus|\bvs\b|blam\w*|culp\w*|clash|rift/.test(normal(story.title+' '+story.snippet));
   return {
     event, sceneId: faceoff ? 'politics-faceoff' : sceneId, theme, layout:faceoff?'masthead':layout, ...themes[theme],
-    scene: faceoff ? 'Donald Trump on the left, elderly man with swept blond hair, facing JD Vance on the right, younger man about forty with short dark brown hair and a full brown beard, recognizable editorial painted portraits, symmetrical boxing-poster-style political face-off composition, formal suits, no real fight, plain divided backdrop' : scenes[event][Number(sceneId.split('-').at(-1))],
+    scene: faceoff ? 'Donald Trump on the left, elderly man with swept blond hair, facing JD Vance on the right, younger man about forty with short dark brown hair and a full brown beard, recognizable editorial painted portraits, symmetrical boxing-poster-style political face-off composition, formal suits, no real fight, plain divided backdrop' : choices[Number(sceneId.split('-').at(-1))],
+    ...(movement ? {priceMove: movement} : {}),
     faceoff,
     subject: bitcoin ? 'Bitcoin symbolism is appropriate only as an editorial metaphor.' :
       'Depict only the actual subject of the source. No currency, coins or unrelated financial imagery.',

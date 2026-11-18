@@ -44,7 +44,38 @@ export function socialPoster(kit,image,index,platform) {
   .body{position:absolute;top:${tall?860:894}px;width:792px;height:175px;border-left:4px solid ${accent};padding:0 0 0 23px}.body p{margin:0;font-size:39px;line-height:1.22;color:#e4eaf5;overflow-wrap:break-word;text-wrap:pretty}
   .foot{position:absolute;top:${tall?1062:1100}px;left:0;width:792px;display:flex;gap:12px;align-items:center;color:#a9b7cc;font-size:20px}.dots{display:flex;gap:8px;margin-left:auto}.dots i{width:27px;height:4px;background:#384355;border-radius:4px}.dots i.on{background:${accent}}.page{color:${accent};font-size:23px;font-weight:800}.label{color:${secondary}}
   </style></head><body><div class="stripe"></div><main class="safe"><div class="eyebrow">${escapeHtml(slide.label)}</div><div class="headline fit" data-min="51"><h1>${escapeHtml(slide.title)}</h1></div><div class="art-stage">${art}</div>${slide.body?'<div class="body fit" data-min="31"><p>'+escapeHtml(slide.body)+'</p></div>':''}<div class="foot"><span>${escapeHtml(date)}</span><span>·</span><span class="label">${portrait?'Montaje editorial':'Ilustración editorial'}</span><div class="dots">${kit.slides.map((_,i)=>'<i class="'+(i===index?'on':'')+'"></i>').join('')}</div><span class="page">${index+1}/${kit.slides.length}</span></div></main><script>
-  for(const box of document.querySelectorAll('.fit')){const text=box.firstElementChild,min=Number(box.dataset.min);let n=0;while((box.scrollHeight>box.clientHeight||box.scrollWidth>box.clientWidth)&&n++<120){const size=parseFloat(getComputedStyle(text).fontSize);if(size<=min)break;text.style.fontSize=(size-.5)+'px';}}
-  document.documentElement.dataset.fits=String([...document.querySelectorAll('.fit')].every(box=>box.scrollHeight<=box.clientHeight&&box.scrollWidth<=box.clientWidth));
+  document.fonts.ready.then(() => {
+    const headline = document.querySelector('.headline');
+    const body = document.querySelector('.body');
+    const art = document.querySelector('.art-stage');
+    const boxes = [...document.querySelectorAll('.fit')];
+    const fits = box => box.scrollHeight <= box.clientHeight && box.scrollWidth <= box.clientWidth;
+
+    for (const box of boxes) {
+      const text = box.firstElementChild;
+      const min = Number(box.dataset.min);
+      for (let size = parseFloat(getComputedStyle(text).fontSize); !fits(box) && size > min;) {
+        size = Math.max(min, size - 0.5);
+        text.style.fontSize = size + 'px';
+      }
+    }
+
+    // Give overflow to the text from the artwork, keeping the bottom of the
+    // copy and the footer in the same mobile safe area.
+    const extraTitle = headline.scrollHeight - headline.clientHeight;
+    const extraBody = body ? body.scrollHeight - body.clientHeight : 0;
+    const artHeight = art.clientHeight - extraTitle - extraBody;
+    if (extraTitle + extraBody > 0 && artHeight >= 240) {
+      headline.style.height = headline.scrollHeight + 'px';
+      art.style.top = (art.offsetTop + extraTitle) + 'px';
+      art.style.height = artHeight + 'px';
+      if (extraBody > 0) {
+        body.style.top = (body.offsetTop - extraBody) + 'px';
+        body.style.height = body.scrollHeight + 'px';
+      }
+    }
+
+    document.documentElement.dataset.fits = String(boxes.every(fits));
+  });
   </script></body></html>`;
 }

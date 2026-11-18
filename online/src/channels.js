@@ -7,12 +7,13 @@ import {createStorage} from './storage.js';
 import {shareXUrl,xButtons} from './share-x.js';
 import {shareTikTokUrl} from './share-tiktok.js';
 import {FAST_EDITORIAL_PROVIDER} from './fast-editorial.js';
+import {draftTikTok} from './tiktok-content.js';
 
 const platforms={x:'Twitter/X',i:'Instagram',t:'TikTok'};
 const names={x:'x',i:'instagram',t:'tiktok'};
 const codes={x:'x',instagram:'i',tiktok:'t'};
 const xCopyKey = id => 'channel_x_copy:' + id;
-const jobWithCopy = "SELECT j.*, (SELECT value FROM runtime WHERE key='channel_x_copy:'||j.story_id AND j.platform='x') AS x_copy, (SELECT value FROM runtime WHERE key='channel_social_kit:'||j.story_id AND j.platform!='x') AS social_kit FROM channel_jobs j";
+const jobWithCopy = "SELECT j.*, (SELECT value FROM runtime WHERE key='channel_x_copy:'||j.story_id AND j.platform='x') AS x_copy, COALESCE((SELECT value FROM runtime WHERE key='channel_social_kit:'||j.story_id||':'||j.platform),(SELECT value FROM runtime WHERE key='channel_social_kit:'||j.story_id AND j.platform!='x')) AS social_kit FROM channel_jobs j";
 const xForJob = (story, job) => xPublication(story, selectedXText(job.x_copy));
 const kitForJob = (story,job) => socialKit({...story,social_kit:job.social_kit});
 export function newsCard(story) {
@@ -38,7 +39,7 @@ function draftText(story,platform,xCopy=null,savedKit=null) {
     return option.label+'\n'+x.text+'\n'+x.weightedLength+'/280 caracteres ponderados';
   }).join('\n\n') : kit.x.text+'\n\n'+kit.x.weightedLength+'/280 caracteres ponderados';
   const body=platform==='x' ? xText+'\n\n'+(choices.length>1?'Elige el enfoque para preparar una portada.':'Una portada.') :
-    kit[platform].caption+'\n\n'+(kit.quality?.ready===false?'Faltan datos distintos para preparar un carrusel. Esta alerta necesita ampliar la información; no se crearán láminas de relleno.':kit.slides.length+' láminas:\n'+kit.slides.map((s,i)=>(i+1)+'. '+s.title+'\n'+s.body).join('\n\n'));
+    kit[platform].caption+'\n\n'+(kit.quality?.ready===false?'El guion necesita más contexto o una redacción más breve.'+(platform==='tiktok'?' Pulsa «Completar guion» para prepararlo con el titular y el extracto guardados.':' Revisa el texto completo y la fuente.'):kit.slides.length+' láminas:\n'+kit.slides.map((s,i)=>(i+1)+'. '+s.title+'\n'+s.body).join('\n\n'));
   const text=['📝 Borrador · '+platforms[codes[platform]],body,
     ...(platform==='x'?['Fuente: '+story.source_url]:[]),
     'Fecha original: '+kit.source.publishedAt.slice(0,10),
@@ -126,14 +127,19 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
       if(xCopy)await db.set(xCopyKey(id),xCopy);
       let kit=null;
       if(platform!=='x'){
-        const prior=await db.first('SELECT value FROM runtime WHERE key=?','channel_social_kit:'+id);
-        kit=prior?JSON.parse(prior.value):socialKitV2(story);
-        if(!prior)await db.run('INSERT OR IGNORE INTO runtime(key,value) VALUES(?,?)','channel_social_kit:'+id,JSON.stringify(kit));
+        const key='channel_social_kit:'+id+':'+platform;
+        let prepared=story;
+        if(platform==='tiktok'&&!JSON.parse(story.editorial).marketSnapshot) {
+          const copy=await draftTikTok(story,env,db,now());
+          if(copy)prepared={...story,editorial:JSON.stringify(copy)};
+        }
+        kit=socialKitV2(prepared,{platform});
+        await db.run('INSERT OR IGNORE INTO runtime(key,value) VALUES(?,?)',key,JSON.stringify(kit));
       }
       const full=draftText(story,platform,xCopy,kit);
       const prepare=platform==='x'?choices.map(option => [{
         text: choices.length===1?'Preparar portada':'Portada · '+option.label, callback_data:'gen'+option.code+':'+id
-      }]):kit.quality?.ready===false?[]:[[{text:'Preparar '+kit.slides.length+' láminas',callback_data:'gen'+code+':'+id}]];
+      }]):kit.quality?.ready===false?(platform==='tiktok'?[[{text:'Completar guion',callback_data:'writet:'+id}]]:[]):[[{text:'Preparar '+kit.slides.length+' láminas',callback_data:'gen'+code+':'+id}]];
       const keyboard={inline_keyboard:[...(enabled()?prepare:[]),
         [{text:'Ver texto completo y fuente',callback_data:'info'+code+':'+id}],
         [{text:'Cancelar este formato',callback_data:'cancel'+code+':'+id}]]};
@@ -146,7 +152,7 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
     return true;
   }
   async function action(action,id,messageId) {
-    if(!/^(gen[qh]|(?:gen|ok|cancel|info)[xit])$/.test(action))return false;
+    if(!/^(gen[qh]|(?:gen|ok|cancel|info|recover|write)[xit])$/.test(action))return false;
     const verb=action.slice(0,-1),code=action.at(-1),platform=names[code]||'x',job=await getJob(id,platform);
     if(!job)return false;
     if(job.draft_message!==String(messageId)) {
@@ -156,6 +162,17 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
     }
     const story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",id);
     if(!story)return false;
+    if(verb==='recover')return recover(id,platform,messageId);
+    if(verb==='write'&&platform==='tiktok'&&job.state==='draft'&&job.delivery==='sent') {
+      if((await db.first("SELECT COUNT(*) AS n FROM channel_assets WHERE story_id=? AND platform='tiktok'",id)).n)return false;
+      const script=await draftTikTok(story,env,db,now(),{retry:true});
+      if(!script){await edit(job,'⏳ TikTok · Guion pendiente\n\nEl cupo de redacción o el contexto disponible no permitió completar el guion. El texto original está guardado.',{inline_keyboard:[[{text:'Completar guion',callback_data:'writet:'+id}],[{text:'Ver texto completo y fuente',callback_data:'infot:'+id}]]});return true;}
+      const kit=socialKitV2({...story,editorial:JSON.stringify(script)},{platform});
+      if(!kit.quality.ready)return false;
+      await db.set('channel_social_kit:'+id+':tiktok',kit);
+      await edit(job,draftText(story,platform,null,kit)||kit.tiktok.caption,{inline_keyboard:[[{text:'Preparar '+kit.slides.length+' láminas',callback_data:'gent:'+id}],[{text:'Ver texto completo y fuente',callback_data:'infot:'+id}]]});
+      return true;
+    }
     if(verb==='gen'&&job.state==='draft'&&enabled()) {
       if(platform!=='x'&&kitForJob(story,job).quality?.ready===false)return false;
       const queue=env.DB.prepare("UPDATE channel_jobs SET state='queued' WHERE story_id=? AND platform=? AND state='draft'").bind(id,platform);
@@ -200,6 +217,50 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
     }
     return true;
   }
+  async function recoveryNotice(id,platform) {
+    const job=await getJob(id,platform);
+    if(!job||job.state!=='blocked'||!['uncertain','sent'].includes(job.delivery)||!job.draft_message)return false;
+    const assets=await db.all('SELECT position,png,file_id,message_id FROM channel_assets WHERE story_id=? AND platform=? ORDER BY position',id,platform);
+    const story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",id);
+    const expected=platform==='x'?1:story?kitForJob(story,job).slides.length:0;
+    if(!story||assets.length!==expected||assets.some((a,i)=>a.position!==i||!a.png||a.file_id||a.message_id))return false;
+    const uncertain=job.delivery==='uncertain';
+    return edit(job,'⚠️ '+platforms[codes[platform]]+' · '+(uncertain?'Entrega sin confirmar':'Entrega pendiente')+'\n\n'+(uncertain?'No llegó la confirmación de Telegram. Comprueba el chat antes de recuperar el archivo: el envío anterior podría haber llegado.':'Telegram rechazó el envío. El archivo sigue guardado y puedes volver a intentarlo.')+'\nReferencia: '+id.slice(0,8),{inline_keyboard:[
+      [{text:uncertain?'Recuperar archivo · puede duplicarse':'Reintentar archivo guardado',callback_data:'recover'+codes[platform]+':'+id}],
+      [{text:'Ver texto completo y fuente',callback_data:'info'+codes[platform]+':'+id}]
+    ]});
+  }
+  async function refreshDraft(id,platform) {
+    const job=await getJob(id,platform);
+    if(!job||platform!=='tiktok'||job.state!=='draft'||job.delivery!=='sent')return {state:'not-editable'};
+    const assets=await db.first('SELECT COUNT(*) AS n FROM channel_assets WHERE story_id=? AND platform=?',id,platform);
+    if(assets.n)return {state:'not-editable'};
+    const story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",id);
+    if(!story)return {state:'approval-required'};
+    const source=JSON.parse(story.editorial);
+    const script=source.marketSnapshot?null:await draftTikTok(story,env,db,now(),{retry:true});
+    const kit=socialKitV2(script?{...story,editorial:JSON.stringify(script)}:story,{platform});
+    await db.set('channel_social_kit:'+id+':'+platform,kit);
+    await edit(job,draftText(story,platform,null,kit)||kit.tiktok.caption,{inline_keyboard:[
+      [{text:kit.quality.ready?'Preparar '+kit.slides.length+' láminas':'Completar guion',callback_data:(kit.quality.ready?'gent:':'writet:')+id}],
+      [{text:'Ver texto completo y fuente',callback_data:'infot:'+id}],
+      [{text:'Cancelar este formato',callback_data:'cancelt:'+id}]
+    ]});
+    return {state:'draft',ready:kit.quality.ready,slides:kit.slides.length};
+  }
+  async function recover(id,platform,messageId) {
+    if(!enabled())return false;
+    const job=await getJob(id,platform);
+    if(!job||job.state!=='blocked'||!['uncertain','sent'].includes(job.delivery)||job.draft_message!==String(messageId))return false;
+    const assets=await db.all('SELECT position,png,file_id,message_id FROM channel_assets WHERE story_id=? AND platform=? ORDER BY position',id,platform);
+    const story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",id);
+    const expected=platform==='x'?1:story?kitForJob(story,job).slides.length:0;
+    if(!story||assets.length!==expected||assets.some((a,i)=>a.position!==i||!a.png||a.file_id||a.message_id))return false;
+    const changed=await db.run("UPDATE channel_jobs SET state='rendering',delivery='sent',error=NULL,lease_until=0 WHERE story_id=? AND platform=? AND state='blocked' AND draft_message=?",id,platform,String(messageId));
+    if(!changed.meta?.changes)return false;
+    await edit(job,'⏳ Recuperando '+platforms[codes[platform]]+'\n\nEl archivo guardado está en cola para una nueva entrega.');
+    return true;
+  }
   async function renderPng(html,dimensions) {
     if(render)return new Uint8Array(await render(html,dimensions));
     const {launch}=await import('@cloudflare/playwright');
@@ -217,7 +278,7 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
     if(!enabled())return {state:'disabled'};
     const owner=crypto.randomUUID(),instant=now();
     if(!await db.lock('visual',owner,instant,90_000))return {state:'busy'};
-    let job;
+    let job, renderPosition;
     try {
       job=await db.first(jobWithCopy+" WHERE j.lease_until<=? AND (j.state IN ('queued','rendering','sending') OR (j.state='review' AND j.error='review-edit-pending') OR (j.platform IN ('x','tiktok') AND j.state='approved' AND j.error GLOB 'share-edit-pending:*')) ORDER BY j.created_at LIMIT 1",instant);
       if(!job)return {state:'idle'};
@@ -251,6 +312,7 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
         if(last&&instant-JSON.parse(last.value)<25_000)return {state:'browser-cooldown'};
         if(!await storage.allow(1_900_000))return {state:'storage-paused'};
         const position=assets.length;
+        renderPosition=position;
         await db.set('visual_last_browser',instant);
         const html=job.platform==='x'?visualHtml(result.brief,result.image):socialHtml(kit,result.image,position,job.platform);
         const dims=job.platform==='x'?visualDimensions(result.brief,0):socialDimensions(job.platform);
@@ -275,19 +337,37 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
     }catch(error) {
       if(job) {
         const current=await getJob(job.story_id,job.platform),category=error instanceof ServiceError?error.service:'preparation-unavailable';
+        if(current.state==='sending'&&error.rejected&&error.status===429) {
+          const attempt=Number(/^delivery-retry:(\d+)$/.exec(current.error||'')?.[1]||0)+1;
+          if(attempt<=2) {
+            await db.run("UPDATE channel_jobs SET state='rendering',delivery='sent',error=?,lease_until=? WHERE story_id=? AND platform=?",'delivery-retry:'+attempt,now()+error.retryAfter*1000,job.story_id,job.platform);
+            await edit(job,'⏳ '+platforms[codes[job.platform]]+' · Telegram pide una pausa\n\nReintentaré el archivo guardado cuando termine la espera.');
+            return {state:'delivery-deferred'};
+          }
+        }
         // Browser network errors retry the saved illustration at most twice.
         const attempt=Number(/^render-retry:(\d+)$/.exec(current.error||'')?.[1]||0)+1;
         if(current.state!=='sending'&&!(error instanceof ServiceError)&&attempt<=2) {
           await db.run('UPDATE channel_jobs SET error=? WHERE story_id=? AND platform=?','render-retry:'+attempt,job.story_id,job.platform);
           return {state:'render-deferred'};
         }
-        await db.run("UPDATE channel_jobs SET state='blocked',error=?,delivery=? WHERE story_id=? AND platform=?",category,current.state==='sending'?'uncertain':current.delivery,job.story_id,job.platform);
-        await edit(job,'⚠️ '+platforms[codes[job.platform]]+' · Preparación pendiente de revisión\n\n'+
-          (current.state==='sending'?'La entrega no se pudo confirmar. No se reenviará automáticamente.':'No se pudo completar la imagen. El borrador y la fuente siguen guardados.')+
-          '\nReferencia: '+job.story_id.slice(0,8));
+        const uncertain=current.state==='sending'&&!error.rejected;
+        await db.run("UPDATE channel_jobs SET state='blocked',error=?,delivery=? WHERE story_id=? AND platform=?",category,uncertain?'uncertain':'sent',job.story_id,job.platform);
+        if(uncertain||(current.state==='sending'&&error.rejected)){await recoveryNotice(job.story_id,job.platform);return {state:'blocked'};}
+        const overflow=category==='layout-overflow'&&current.state!=='sending';
+        let message='No se pudo completar la imagen. El borrador y la fuente siguen guardados.';
+        if(current.state==='sending')message='La entrega no se pudo confirmar. No se reenviará automáticamente.';
+        if(overflow) {
+          const asset=job.platform==='x'?'la portada':Number.isInteger(renderPosition)?'la lámina '+(renderPosition+1):'una lámina';
+          message='El texto no cabe en '+asset+'. La ilustración, el borrador y la fuente siguen guardados.';
+        }
+        await edit(job,'⚠️ '+platforms[codes[job.platform]]+' · Preparación pendiente de revisión\n\n'+message+
+          '\nReferencia: '+job.story_id.slice(0,8),overflow?{inline_keyboard:[[
+            {text:'Ver texto completo y fuente',callback_data:'info'+codes[job.platform]+':'+job.story_id}
+          ]]}:undefined);
       }
       return {state:'blocked'};
     }finally{await db.unlock('visual',owner);}
   }
-  return {pick,action,step,refreshX,refreshTikTok};
+  return {pick,action,step,refreshX,refreshTikTok,recover,recoveryNotice,refreshDraft};
 }

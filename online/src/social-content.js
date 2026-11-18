@@ -29,7 +29,7 @@ export function socialPlan(story) {
   if(custom) {
     slides=custom.map((slide,index)=>({title:clean(slide.title),body:clean(slide.body),
       label:clean(slide.label)|| (index===0?'LA NOTICIA':'EL DATO'),
-      visual:kinds.has(slide.visual)?slide.visual:socialScene(slide.title+' '+slide.body)}));
+      visual:kinds.has(slide.visual)?slide.visual:socialScene(slide.title+' '+slide.body),...(typeof slide.evidence==='string'?{evidence:clean(slide.evidence)}:{})}));
   }else{
     const title=clean(e.headline),details=[];
     for(const value of [e.instagram,e.tweet,e.angle,e.reasoning])for(const sentence of sentences(value)){

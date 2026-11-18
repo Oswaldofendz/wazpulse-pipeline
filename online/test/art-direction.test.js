@@ -59,6 +59,21 @@ test('headline event wins over background events and Spanish variants are suppor
   assert.equal(artDirection(story('Binance opens crypto withdrawals in phases starting with bitcoin following $6.3 billion hack')).event, 'recovery');
 });
 
+test('the BTC drop prompt starts from the actual news and makes the drop the scene',()=>{
+  const title='Bitcoin slips before U.S. inflation report as traders price in Fed rate increase';
+  const snippet='The market increased its bets on a Fed hike ahead of the inflation report.';
+  const brief=visualBrief(story(title,{snippet}));
+  assert.equal(brief.art.event,'price-down');
+  assert.match(brief.art.scene,/bitcoin.*descending red candlestick shapes/);
+  assert.ok(brief.prompt.includes(title)&&brief.prompt.includes(snippet));
+  assert.ok(brief.prompt.indexOf(title)<brief.prompt.indexOf('Composition guide'));
+  assert.match(brief.prompt,/No real quotes, scale, figures or invented price data/);
+  assert.doesNotMatch(brief.art.scene,/central bank|calendar|notebook/);
+  assert.equal(artDirection(story('El bitcoin se desploma ante el IPC')).event,'price-down');
+  assert.equal(artDirection(story('Nvidia shares rebound after a difficult session')).event,'price-up');
+  assert.equal(artDirection(story('Fed raises rates as Bitcoin falls')).event,'policy');
+});
+
 test('consecutive jobs vary scenes, palettes and compositions without random retry changes', () => {
   const recent = [];
   for (let i = 0; i < 7; i++) {

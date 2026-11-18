@@ -280,11 +280,12 @@ test('style previews reuse their own image within the same free budget and prese
   assert.equal(s.mediaState.documents.length, 6);
 });
 
-test('AI scene avoids company lettering while the composited headline preserves its exact brand', async () => {
+test('AI scene gets the exact company as context and reserves lettering for the cover', async () => {
   const s = await fixture(), story = s.db.native.prepare('SELECT * FROM stories').get();
   const e = JSON.parse(story.editorial); e.headline = 'Binance cubre pérdidas';
   const brief = visualBrief({...story, title: 'Binance covers losses after hack', snippet: 'Binance issued an update.', editorial: e});
   assert.equal(brief.title, e.headline);
-  assert.equal(/Binance/i.test(brief.prompt), false);
+  assert.match(brief.prompt,/Binance covers losses after hack/);
+  assert.match(brief.prompt,/No text, numbers, signage or watermarks/);
   assert.ok(visualHtml(brief, JPEG).includes(e.headline));
 });

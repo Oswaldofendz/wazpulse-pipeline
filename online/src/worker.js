@@ -33,7 +33,7 @@ export default {
     if(['/tiktok/connect','/tiktok/connect.js','/tiktok/start','/tiktok/callback'].includes(path))return tiktokAuthRequest(request,env);
     if(path==='/auditoria'||path==='/auditoria/app.js')return auditRequest(request);
     if (path === '/health' && request.method === 'GET') {
-      return json({service: 'wacapital-online', version: '0.7.0', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
+      return json({service: 'wacapital-online', version: '0.8.0', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
     }
     if (path === '/telegram/webhook' && request.method === 'POST') {
       if (!await secretMatches(request.headers.get('X-Telegram-Bot-Api-Secret-Token'), env.TELEGRAM_WEBHOOK_SECRET)) return json({error: 'Unauthorized'}, 401);
@@ -56,6 +56,20 @@ export default {
       if (!env.DB) return json({error: 'Database not configured'}, 503);
       try {
         const pipeline = createPipeline(env);
+        const channelPath=path.match(/^\/admin\/channel\/([a-f0-9]{32})\/(x|tiktok|instagram)(?:\/(notice|draft))?$/);
+        if(channelPath) {
+          const [,id,platform,action]=channelPath;
+          const db=store(env.DB);
+          if(request.method==='POST'&&action==='notice')return json({updated:await createChannels(env).recoveryNotice(id,platform)});
+          if(request.method==='POST'&&action==='draft')return json(await createChannels(env).refreshDraft(id,platform));
+          if(request.method==='GET'&&!action) {
+            const story=await db.first('SELECT id,title,snippet,source,source_url,published_at,editorial FROM stories WHERE id=?',id);
+            const job=await db.first('SELECT state,delivery,error,draft_message,approved_at FROM channel_jobs WHERE story_id=? AND platform=?',id,platform);
+            const kit=await db.first('SELECT value FROM runtime WHERE key IN (?,?) ORDER BY CASE WHEN key=? THEN 0 ELSE 1 END LIMIT 1','channel_social_kit:'+id+':'+platform,'channel_social_kit:'+id,'channel_social_kit:'+id+':'+platform);
+            const assets=await db.all('SELECT position,length(png) AS bytes,message_id FROM channel_assets WHERE story_id=? AND platform=? ORDER BY position',id,platform);
+            return json({story,job,kit:kit?JSON.parse(kit.value):null,assets});
+          }
+        }
         const revision=path.match(/^\/admin\/social-revision\/([a-f0-9]{32})(?:\/(ready|[0-4]))?$/);
         if(revision&&request.method==='POST'){
           const service=socialRevisions(env),[,id,action]=revision;

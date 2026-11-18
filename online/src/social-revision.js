@@ -21,7 +21,7 @@ export function socialRevisions(env,{fetcher=fetch,now=Date.now}={}) {
     const id=(await digest(parentId+'|social-v2|'+platform+'|'+JSON.stringify(e)+'|'+await digest(input.image))).slice(0,32);
     const existing=await db.first('SELECT state,delivery,draft_message FROM channel_jobs WHERE story_id=? AND platform=?',id,platform);
     if(existing)return {id,...existing,created:false};
-    const story={...parent,id,editorial:JSON.stringify(e)},kit=socialKitV2(story);
+    const story={...parent,id,editorial:JSON.stringify(e)},kit=socialKitV2(story,{platform});
     if(!kit.quality.ready)return {error:'More source detail required',status:409};
     if(!await createStorage(env,{fetcher,now}).allow(12_000_000))return {error:'Storage paused',status:409};
     const instant=now(),brief=visualBrief(story),snapshot=JSON.stringify(kit);
@@ -39,7 +39,7 @@ export function socialRevisions(env,{fetcher=fetch,now=Date.now}={}) {
         '\n\nPreparando '+kit.slides.length+' láminas nuevas. Revisarás esta versión antes de enviarla.');
       if(!Number.isSafeInteger(message?.message_id))throw Error('Missing message');
       await db.run("UPDATE channel_jobs SET draft_message=?,delivery='sent' WHERE story_id=? AND platform=?",String(message.message_id),id,platform);
-      return {id,state:'draft',created:true,files:kit.slides.length};
+      return {id,state:'draft',created:true,files:kit.slides.length,kit};
     }catch{
       await db.run("UPDATE channel_jobs SET state='blocked',delivery='uncertain',error='revision-draft-uncertain' WHERE story_id=? AND platform=?",id,platform);
       return {id,state:'blocked',created:true};

@@ -16,7 +16,7 @@ async function approvedCarousel(env, id) {
   const db = store(env.DB);
   const story = await db.first(`
     SELECT s.*, (SELECT manifest FROM channel_images WHERE story_id=s.id) AS image_manifest,
-      (SELECT value FROM runtime WHERE key='channel_social_kit:'||s.id) AS social_kit
+      COALESCE((SELECT value FROM runtime WHERE key='channel_social_kit:'||s.id||':tiktok'),(SELECT value FROM runtime WHERE key='channel_social_kit:'||s.id)) AS social_kit
     FROM stories s JOIN channel_jobs j ON j.story_id = s.id
     WHERE s.id = ? AND s.state = 'approved' AND j.platform = 'tiktok'
       AND j.state = 'approved' AND j.delivery = 'sent'

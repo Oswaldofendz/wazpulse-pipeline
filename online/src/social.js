@@ -4,6 +4,8 @@ import {composePortraits,portraitCredits} from './portraits.js';
 import {marketGraph} from './market-graph.js';
 import {socialPlan,socialDescription} from './social-content.js';
 import {socialPoster} from './social-layout.js';
+import {marketStory,storyPresentation,TIKTOK_STORY} from './tiktok-content.js';
+import {tiktokStoryHtml} from './tiktok-layout.js';
 
 const clean = value => String(value || '').replace(/[\u0000-\u001f]/g,' ').replace(/\s+/g,' ').trim();
 const segmenter = new Intl.Segmenter('es',{granularity:'sentence'});
@@ -55,13 +57,15 @@ export function socialKit(story) {
   return e.socialVersion===2?socialKitV2(story):legacySocialKit(story);
 }
 
-export function socialKitV2(story) {
+export function socialKitV2(story,{platform}={}) {
   const base=legacySocialKit(story),e=typeof story.editorial==='string'?JSON.parse(story.editorial):story.editorial;
-  const plan=story.editorial&&e.marketSnapshot?{slides:base.slides.map((s,i)=>({...s,visual:i?'news':'company'})),quality:{ready:true,issues:[]}}:socialPlan(story);
+  const plan=e.marketSnapshot?(platform==='tiktok'?marketStory(e.marketSnapshot):{slides:base.slides.map((s,i)=>({...s,visual:i?'news':'company'})),quality:{ready:true,issues:[]}}):socialPlan(story);
   const caption=socialDescription(story,plan);
+  if(platform==='tiktok'&&!e.marketSnapshot&&plan.slides.some(s=>s.title.length>75||s.body.length>160))plan.quality={ready:false,issues:[...plan.quality.issues,'mobile-copy-needs-edit']};
   if(caption.length>3500)plan.quality={ready:false,issues:[...plan.quality.issues,'caption-needs-edit']};
-  return {...base,version:2,title:clean(e.socialTitle||plan.slides[0]?.title||base.title),...plan,
+  const kit={...base,version:2,title:clean(e.socialTitle||plan.slides[0]?.title||base.title),...plan,
     instagram:{...base.instagram,caption},tiktok:{...base.tiktok,caption}};
+  return platform==='tiktok'?storyPresentation(kit):kit;
 }
 
 export function socialText(kit) {
@@ -84,6 +88,7 @@ export function socialDimensions(platform) {
 }
 
 export function socialHtml(kit,image,index,platform) {
+  if(platform==='tiktok'&&kit.presentation===TIKTOK_STORY)return tiktokStoryHtml(kit,image,index);
   if(kit.marketSnapshot)return marketGraph(kit.marketSnapshot,{title:kit.title,platform,index,safe:kit.version===2});
   if(kit.version===2)return socialPoster(kit,image,index,platform);
   const {height}=socialDimensions(platform), slide=kit.slides[index];

@@ -81,7 +81,7 @@ export function createPipeline(env, {fetcher = fetch, now = Date.now} = {}) {
         await channels.pick(id,action.at(-1),callback.message.message_id);
         return;
       }
-      if (/^(gen[qh]|(?:gen|ok|cancel|info)[xit])$/.test(action)) {
+      if (/^(gen[qh]|(?:gen|ok|cancel|info|recover|write)[xit])$/.test(action)) {
         await channels.action(action,id,callback.message.message_id);
         return;
       }

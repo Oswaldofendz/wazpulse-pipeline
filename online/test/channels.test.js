@@ -7,7 +7,7 @@ import {minimalUpdate} from '../src/domain.js';
 import {visualBrief} from '../src/publication.js';
 import {shareXRequest} from '../src/share-x.js';
 import {createStorage} from '../src/storage.js';
-import {network,telegram} from '../src/io.js';
+import {network,telegram,ServiceError} from '../src/io.js';
 import {NOW,setup,callback,decodeUpload} from './helpers.js';
 const JPEG='/9j/'+'A'.repeat(160),PNG=new Uint8Array([137,80,78,71,13,10,26,10,1,2,3]);
 async function fixture(overrides={}) {
@@ -24,6 +24,7 @@ async function fixture(overrides={}) {
     if(url.endsWith('/sendMessage')&&state.loseDraft)throw Error('uncertain draft');
     if(url.endsWith('/sendDocument')){
       state.uploads.push(options.body);
+      if(state.rateLimited)return Response.json({ok:false,error_code:429,parameters:{retry_after:60}},{status:429});
       if(state.lose)throw Error('lost upload response');
       return Response.json({ok:true,result:{message_id:500,document:{file_id:'cover'}}});
     }
@@ -38,11 +39,35 @@ async function fixture(overrides={}) {
   await p.tick();
   const story=s.db.native.prepare('SELECT * FROM stories').get();
   const channels=createChannels(s.env,{fetcher,now:()=>state.instant,
-    generate:async()=>{state.generated++;return JPEG;},render:async(html,dims)=>{state.rendered.push({html,dims});return PNG;}});
+    generate:async()=>{state.generated++;return JPEG;},render:async(html,dims)=>{
+      state.rendered.push({html,dims});
+      if(state.rendered.length===state.overflowAt)throw new ServiceError('layout-overflow');
+      return PNG;
+    }});
   const advance=async()=>{state.instant+=30_000;return channels.step();};
   return {...s,p,story,channels,channelState:state,advance,fetcher};
 }
 function job(s,p='x'){return s.db.native.prepare('SELECT * FROM channel_jobs WHERE platform=?').get(p);}
+
+test('a layout failure identifies the slide and keeps its full draft and saved illustration available',async()=>{
+  const s=await fixture();
+  await s.channels.pick(s.story.id,'t',s.story.message_id);
+  const message=job(s,'tiktok').draft_message;
+  await s.channels.action('gent',s.story.id,message);
+  s.channelState.overflowAt=2;
+  assert.equal((await s.advance()).state,'rendered');
+  assert.equal((await s.advance()).state,'blocked');
+  assert.equal(job(s,'tiktok').error,'layout-overflow');
+  assert.equal(job(s,'tiktok').delivery,'sent');
+  const edit=s.channelState.edits.at(-1);
+  assert.equal(String(edit.message_id),message);
+  assert.match(edit.text,/El texto no cabe en la lámina 2/);
+  assert.equal(edit.reply_markup.inline_keyboard[0][0].callback_data,'infot:'+s.story.id);
+  assert.equal(s.db.native.prepare('SELECT image FROM channel_images WHERE story_id=?').get(s.story.id).image,JPEG);
+  assert.equal((await s.advance()).state,'idle');
+  assert.equal(s.channelState.generated,1);
+  assert.equal(s.channelState.uploads.length,0);
+});
 
 test('mobile news card is short, with three distinct platform buttons and no automatic attachments',async()=>{
   const s=await fixture(),m=s.state.messages[0];
@@ -225,6 +250,22 @@ test('repeated platform selection and generation cannot duplicate drafts or imag
   for(let n=0;n<6;n++)await s.advance();
   assert.equal(s.channelState.uploads.length,1);
 });
+
+test('new TikTok market kit is frozen independently of Instagram and legacy snapshots',async()=>{
+  const s=await fixture(),e=JSON.parse(s.story.editorial);
+  e.marketSnapshot={version:1,at:NOW,trigger:{symbol:'BTC-USD',period:'session',change:-5,direction:-1},rows:[
+    {symbol:'BTC-USD',name:'Bitcoin',short:'BTC',price:65000,previous:68421,dayChange:-5,currency:'USD',at:NOW,series:[]}
+  ]};
+  s.db.native.prepare('UPDATE stories SET editorial=? WHERE id=?').run(JSON.stringify(e),s.story.id);
+  await s.channels.pick(s.story.id,'t',s.story.message_id);
+  await s.channels.pick(s.story.id,'i',s.story.message_id);
+  const read=platform=>JSON.parse(s.db.native.prepare('SELECT value FROM runtime WHERE key=?').get('channel_social_kit:'+s.story.id+':'+platform).value);
+  assert.equal(read('tiktok').presentation,'tiktok-story-v1');
+  assert.equal(read('tiktok').slides.length,3);
+  assert.equal(read('instagram').slides.length,5);
+  assert.equal(read('instagram').presentation,undefined);
+  assert.equal(await s.channels.refreshDraft(s.story.id,'instagram').then(r=>r.state),'not-editable');
+});
 test('ambiguous single and album uploads retain buffers and never automatically resend',async()=>{
   for(const code of ['x','i']){
     const s=await fixture(),platform=code==='x'?'x':'instagram';
@@ -237,6 +278,49 @@ test('ambiguous single and album uploads retain buffers and never automatically 
     assert.equal(s.channelState.uploads.length,1);
     assert.equal(s.db.native.prepare('SELECT COUNT(*) AS n FROM channel_assets WHERE png IS NOT NULL').get().n,code==='x'?1:5);
   }
+});
+
+test('owner can explicitly recover an ambiguous upload once, reusing the saved PNG without new generation',async()=>{
+  const s=await fixture();
+  await s.channels.pick(s.story.id,'x',s.story.message_id);
+  const message=job(s).draft_message;
+  await s.channels.action('genx',s.story.id,message);
+  s.channelState.lose=true;
+  for(let n=0;n<4;n++)await s.advance();
+  assert.equal(job(s).delivery,'uncertain');
+  assert.match(s.channelState.edits.at(-1).reply_markup.inline_keyboard[0][0].text,/puede duplicarse/);
+  assert.equal(await s.channels.action('recoverx',s.story.id,999),false);
+  await s.p.handleUpdate(callback(s.story,{data:'recoverx:'+s.story.id,from:{id:999},message:{message_id:Number(message),chat:{id:123}}}));
+  assert.equal(job(s).state,'blocked');
+  assert.equal(await s.channels.action('recoverx',s.story.id,message),true);
+  assert.equal(await s.channels.action('recoverx',s.story.id,message),false);
+  s.channelState.lose=false;
+  await s.advance();
+  assert.equal(job(s).state,'review');
+  assert.equal(s.channelState.generated,1);
+  assert.equal(s.channelState.rendered.length,1);
+  assert.equal(s.channelState.uploads.length,2);
+  const image=async form=>new Uint8Array(await form.get('document').arrayBuffer());
+  assert.deepEqual(await image(s.channelState.uploads[0]),await image(s.channelState.uploads[1]));
+});
+
+test('explicit Telegram rate rejection waits, retries twice, then offers a manual retry without regenerating',async()=>{
+  const s=await fixture();
+  await s.channels.pick(s.story.id,'x',s.story.message_id);
+  await s.channels.action('genx',s.story.id,job(s).draft_message);
+  s.channelState.rateLimited=true;
+  await s.advance();
+  assert.equal((await s.advance()).state,'delivery-deferred');
+  assert.equal(s.channelState.uploads.length,1);
+  assert.equal((await s.advance()).state,'idle');
+  assert.equal((await s.advance()).state,'delivery-deferred');
+  assert.equal((await s.advance()).state,'idle');
+  assert.equal((await s.advance()).state,'blocked');
+  assert.equal(job(s).delivery,'sent');
+  assert.equal(s.channelState.uploads.length,3);
+  assert.match(s.channelState.edits.at(-1).reply_markup.inline_keyboard[0][0].text,/Reintentar archivo guardado/);
+  assert.equal(s.channelState.generated,1);
+  assert.equal(s.channelState.rendered.length,1);
 });
 test('lost draft response and retired generic approve buttons do not trigger the old bundle',async()=>{
   const s=await fixture();
