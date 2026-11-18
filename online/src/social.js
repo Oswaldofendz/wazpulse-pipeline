@@ -1,11 +1,14 @@
 import {coverSubtitle, xPublication, escapeHtml} from './publication.js';
 import {artDirection} from './art-direction.js';
-import {composePortraits,portraitCredits} from './portraits.js';
+import {composePortraits,portraitCredits,portraitArt} from './portraits.js';
 import {marketGraph} from './market-graph.js';
 import {socialPlan,socialDescription} from './social-content.js';
-import {socialPoster} from './social-layout.js';
+import {socialPoster,socialIllustration} from './social-layout.js';
 import {marketStory,storyPresentation,TIKTOK_STORY} from './tiktok-content.js';
 import {tiktokStoryHtml} from './tiktok-layout.js';
+import {marketStoryV2,MARKET_STORY} from './market-story.js';
+import {growthFrame,marketArt,SOCIAL_GROWTH} from './growth-layout.js';
+import {creativePolicy,growthCaption} from './growth-policy.js';
 
 const clean = value => String(value || '').replace(/[\u0000-\u001f]/g,' ').replace(/\s+/g,' ').trim();
 const segmenter = new Intl.Segmenter('es',{granularity:'sentence'});
@@ -59,13 +62,15 @@ export function socialKit(story) {
 
 export function socialKitV2(story,{platform}={}) {
   const base=legacySocialKit(story),e=typeof story.editorial==='string'?JSON.parse(story.editorial):story.editorial;
-  const plan=e.marketSnapshot?(platform==='tiktok'?marketStory(e.marketSnapshot):{slides:base.slides.map((s,i)=>({...s,visual:i?'news':'company'})),quality:{ready:true,issues:[]}}):socialPlan(story);
-  const caption=socialDescription(story,plan);
-  if(platform==='tiktok'&&!e.marketSnapshot&&plan.slides.some(s=>s.title.length>75||s.body.length>160))plan.quality={ready:false,issues:[...plan.quality.issues,'mobile-copy-needs-edit']};
+  const mobile=['tiktok','instagram'].includes(platform);
+  const plan=e.marketSnapshot?(mobile?marketStoryV2(e.marketSnapshot,{platform,story}):{slides:base.slides.map((s,i)=>({...s,visual:i?'news':'company'})),quality:{ready:true,issues:[]}}):socialPlan(story);
+  if(mobile&&!e.marketSnapshot&&plan.slides.length&&e.socialQuestion)plan.slides.at(-1).question=e.socialQuestion;
+  const caption=mobile?(e.socialCaption||growthCaption(story,plan)):socialDescription(story,plan);
+  if(mobile&&!e.marketSnapshot&&plan.slides.some(s=>s.title.length>75||s.body.length>160))plan.quality={ready:false,issues:[...plan.quality.issues,'mobile-copy-needs-edit']};
   if(caption.length>3500)plan.quality={ready:false,issues:[...plan.quality.issues,'caption-needs-edit']};
   const kit={...base,version:2,title:clean(e.socialTitle||plan.slides[0]?.title||base.title),...plan,
     instagram:{...base.instagram,caption},tiktok:{...base.tiktok,caption}};
-  return platform==='tiktok'?storyPresentation(kit):kit;
+  return mobile?{...kit,presentation:e.marketSnapshot?MARKET_STORY:SOCIAL_GROWTH,growth:plan.growth||creativePolicy(story,platform)}:kit;
 }
 
 export function socialText(kit) {
@@ -88,6 +93,11 @@ export function socialDimensions(platform) {
 }
 
 export function socialHtml(kit,image,index,platform) {
+  if([MARKET_STORY,SOCIAL_GROWTH].includes(kit.presentation)){
+    if(!kit.slides[index]||!Number.isInteger(index)||typeof image!=='string'||!/^[A-Za-z0-9+/=]+$/.test(image)||image.length>2_400_000)throw Error('Invalid social asset');
+    const slide=kit.slides[index],art=kit.presentation===MARKET_STORY?marketArt(slide):index===0?(kit.mediaCredits?portraitArt():'<img src="data:image/jpeg;base64,'+image+'" alt="Ilustración editorial de la noticia">'):socialIllustration(slide.visual,index,slide.title+' '+slide.body);
+    return growthFrame(kit,art,index,platform);
+  }
   if(platform==='tiktok'&&kit.presentation===TIKTOK_STORY)return tiktokStoryHtml(kit,image,index);
   if(kit.marketSnapshot)return marketGraph(kit.marketSnapshot,{title:kit.title,platform,index,safe:kit.version===2});
   if(kit.version===2)return socialPoster(kit,image,index,platform);

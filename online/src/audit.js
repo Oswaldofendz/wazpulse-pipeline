@@ -15,6 +15,26 @@ export function auditRequest(request) {
   }});
 }
 
+export function auditStats(rows) {
+  const values = rows.filter(row=>Number.isFinite(row.views)).map(row=>row.views).sort((a,b)=>a-b);
+  const half = Math.floor(values.length/2);
+  const median = values.length === 0 ? null : (values.length%2 ? values[half] : (values[half-1]+values[half])/2);
+  const comparable = rows.filter(row => row.views > 0 && [row.likes,row.comments,row.shares].every(Number.isFinite));
+  const exposure = comparable.reduce((total,row)=>total+row.views,0);
+  const actions = comparable.reduce((total,row)=>total+row.likes+row.comments+row.shares,0);
+  const sharing = rows.filter(row=>row.views>0 && Number.isFinite(row.shares));
+  const shareViews = sharing.reduce((total,row)=>total+row.views,0);
+  const shares = sharing.reduce((total,row)=>total+row.shares,0);
+  const normalized=(key,denominator)=>{
+    const measured=rows.filter(row=>row[denominator]>0&&Number.isFinite(row[key]));
+    const sum=measured.reduce((total,row)=>total+row[denominator],0);
+    return {value:sum?1000*measured.reduce((total,row)=>total+row[key],0)/sum:null,count:measured.length};
+  };
+  const saved=normalized('saves','views'),reached=normalized('shares','reach');
+  return {median, rate:exposure>0?100*actions/exposure:null, measured:comparable.length,
+    shareRate:shareViews>0?1000*shares/shareViews:null, shareSample:sharing.length,saveRate:saved.value,saveSample:saved.count,reachShareRate:reached.value,reachSample:reached.count};
+}
+
 const page = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WaCapital · Auditor de redes</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#0b111a;color:#f0f5fa;font:16px/1.5 system-ui,sans-serif}main{max-width:940px;margin:auto;padding:28px 16px 48px}.brand{color:#83e7cd;font-size:.8rem;letter-spacing:.2em;font-weight:800}h1,h2,h3{line-height:1.15}h1{font-size:clamp(1.8rem,6vw,2.6rem);margin:12px 0}h2{font-size:1.25rem;margin:0 0 12px}h3{font-size:1rem;margin:0 0 6px}p{color:#c0cedc;margin:.6em 0}a{color:#83e7cd}button,input,select{font:inherit;min-height:44px;border:1px solid #40566d;border-radius:9px;color:#f0f5fa;background:#182638;padding:8px 10px}button{cursor:pointer;font-weight:650}button.primary,button[aria-pressed="true"]{background:#83e7cd;color:#0a241e;border-color:#83e7cd}input,select{width:100%;min-width:0}label{display:block;font-size:.9rem;color:#d2dfeb}label input,label select{display:block;margin-top:5px}fieldset{border:0;margin:0;padding:0}form{display:grid;gap:10px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.grid,.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(148px,100%),1fr));gap:10px}.panel,.card{border:1px solid #2a4056;background:#121e2d;border-radius:13px;padding:16px;min-width:0}.panel{margin:12px 0}.card b{font-size:1.4rem;display:block;line-height:1.2}.small,small{font-size:.875rem;color:#c0cedc}.muted{color:#c0cedc}.entry{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;border-top:1px solid #2a4056;padding:10px 0;overflow-wrap:anywhere}.entry button{align-self:center}.entry p{margin:4px 0}meter{width:100%;height:12px;display:block}details{margin-top:10px}summary{cursor:pointer;font-weight:650;min-height:38px;padding:6px 0}#status{min-height:24px}#filter{width:auto}#restore{max-width:100%}[hidden]{display:none!important}
@@ -40,12 +60,16 @@ const page = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta n
 <label>Ventana<select name="window"><option value="24h">Primeras 24 horas</option><option value="7d">Primeros 7 días</option><option value="total">Acumulada</option></select></label>
 <label>Enfoque o formato<select name="variant" id="variant"></select></label>
 <label>Tema o etiqueta<input name="topic" maxlength="65" placeholder="Bitcoin, Fed, #Nasdaq…"></label></div>
+<label>Gancho de portada<select name="hook"><option>Sin clasificar</option><option>Dato protagonista</option><option>Contraste</option><option>Hecho explicado</option><option>Pregunta específica</option></select></label>
 <div class="grid"><label><span id="viewLabel">Impresiones</span><input name="views" type="number" min="0" max="999999999999" step="1" inputmode="numeric" required></label>
 <label>Me gusta<input name="likes" type="number" min="0" max="999999999999" step="1" inputmode="numeric"></label>
 <label>Comentarios / respuestas<input name="comments" type="number" min="0" max="999999999999" step="1" inputmode="numeric"></label>
 <label>Compartidos / reposts<input name="shares" type="number" min="0" max="999999999999" step="1" inputmode="numeric"></label></div>
+<div class="grid"><label>Guardados (si están disponibles)<input name="saves" type="number" min="0" max="999999999999" step="1" inputmode="numeric"></label>
+<label>Alcance: cuentas únicas (opcional)<input name="reach" type="number" min="0" max="999999999999" step="1" inputmode="numeric"></label></div>
 <div class="grid" id="videoMetrics" hidden><label>Tiempo medio visto (s)<input name="watch" type="number" min="0" max="86400" step="0.01" inputmode="decimal"></label>
 <label>Vieron completo (%)<input name="completion" type="number" min="0" max="100" step="0.01" inputmode="decimal"></label></div>
+<p class="small">Anota las cifras que muestre la plataforma. Si un carrusel no ofrece tiempo visto o finalización, déjalos vacíos. Alcance y visualizaciones se comparan por separado.</p>
 <button class="primary" type="submit">Guardar medición</button>
 </form>
 </section>
@@ -55,7 +79,7 @@ const page = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta n
 <button type="submit">Guardar corte de seguidores</button></form>
 </section>
 <section class="panel"><h2>Comparar publicaciones</h2><label>Agrupar por
-<select id="groupBy"><option value="variant">Enfoque o formato</option><option value="topic">Tema o etiqueta</option></select></label><div id="groups"></div></section>
+<select id="groupBy"><option value="variant">Enfoque o formato</option><option value="topic">Tema o etiqueta</option><option value="hook">Gancho dentro de cada formato</option></select></label><p id="learning" class="small"></p><div id="groups"></div></section>
 <section class="panel"><h2>Publicaciones por rendimiento</h2><div id="posts"></div></section>
 <details class="panel"><summary>Copia de seguridad</summary><p>Exporta el historial para conservarlo o llevarlo a otro móvil. Importar fusiona las mediciones por enlace y ventana, y los seguidores por fecha.</p>
 <button type="button" id="export">Exportar historial</button>
@@ -69,6 +93,7 @@ const config = {
   tiktok: {name:'TikTok', views:'Visualizaciones', variants:['Carrusel','Vídeo','Otro'], analytics:'https://www.tiktok.com/tiktokstudio'}
 };
 const storageKey = 'wacapital-auditoria-v1';
+const hooks=['Sin clasificar','Dato protagonista','Contraste','Hecho explicado','Pregunta específica'];
 const maxRows = 1000;
 const get = id => document.getElementById(id);
 const number = new Intl.NumberFormat('es', {maximumFractionDigits:2});
@@ -132,10 +157,12 @@ function cleanPost(row) {
   return {
     platform:network, url:postUrl(row.url,network), date:date(row.date), window:row.window, variant:row.variant,
     topic:String(row.topic || '').trim().slice(0,65), views:metric(row.views),
+    hook:hooks.includes(row.hook)?row.hook:'Sin clasificar',
     likes:metric(row.likes,{optional:true}), comments:metric(row.comments,{optional:true}),
     shares:metric(row.shares,{optional:true}),
-    watch:network === 'tiktok' ? metric(row.watch,{optional:true,max:86400,decimal:true}) : null,
-    completion:network === 'tiktok' ? metric(row.completion,{optional:true,max:100,decimal:true}) : null
+    saves:metric(row.saves,{optional:true}),reach:metric(row.reach,{optional:true}),
+    watch:network !== 'x' ? metric(row.watch,{optional:true,max:86400,decimal:true}) : null,
+    completion:network !== 'x' ? metric(row.completion,{optional:true,max:100,decimal:true}) : null
   };
 }
 function cleanFollow(row) {
@@ -161,19 +188,8 @@ function save(next) {
   history = next;
 }
 
-function stats(rows) {
-  const values = rows.map(row=>row.views).sort((a,b)=>a-b);
-  const half = Math.floor(values.length/2);
-  const median = values.length === 0 ? null : (values.length%2 ? values[half] : (values[half-1]+values[half])/2);
-  const comparable = rows.filter(row => row.views > 0 && [row.likes,row.comments,row.shares].every(value=>value!==null));
-  const exposure = comparable.reduce((total,row)=>total+row.views,0);
-  const actions = comparable.reduce((total,row)=>total+row.likes+row.comments+row.shares,0);
-  const sharing = rows.filter(row=>row.views>0 && row.shares!==null);
-  const shareViews = sharing.reduce((total,row)=>total+row.views,0);
-  const shares = sharing.reduce((total,row)=>total+row.shares,0);
-  return {median, rate:exposure>0?100*actions/exposure:null, measured:comparable.length,
-    shareRate:shareViews>0?1000*shares/shareViews:null, shareSample:sharing.length};
-}
+const stats = ${auditStats.toString()};
+
 function card(label,value,note) {
   const result = node('div',undefined,'card');
   result.append(node('small',label),node('b',value));
@@ -185,7 +201,7 @@ function render() {
   get('network').textContent = current.name;
   get('analytics').href = current.analytics;
   get('viewLabel').textContent = current.views;
-  get('videoMetrics').hidden = platform !== 'tiktok';
+  get('videoMetrics').hidden = platform === 'x';
   document.querySelectorAll('[data-platform]').forEach(button =>
     button.setAttribute('aria-pressed',String(button.dataset.platform===platform)));
   const rows = history.posts.filter(row=>row.platform===platform && row.window===filter.value);
@@ -194,7 +210,9 @@ function render() {
     card('Posts medidos',fmt(rows.length)),
     card('Mediana de '+current.views.toLowerCase(),result.median===null?'—':fmt(result.median)),
     card('Tasa de interacción',result.rate===null?'—':fmt(result.rate)+'%', result.measured ? fmt(result.measured)+' posts con datos completos' : 'Sin datos completos'),
-    card('Compartidos por 1.000',result.shareRate===null?'—':fmt(result.shareRate),result.shareSample ? fmt(result.shareSample)+' posts con compartidos y exposición' : 'Sin datos completos')
+    card('Compartidos por 1.000',result.shareRate===null?'—':fmt(result.shareRate),result.shareSample ? fmt(result.shareSample)+' posts · '+current.views.toLowerCase() : 'Sin datos completos'),
+    card('Guardados por 1.000',result.saveRate===null?'—':fmt(result.saveRate),result.saveSample ? fmt(result.saveSample)+' posts · '+current.views.toLowerCase() : 'Sin guardados registrados'),
+    card('Compartidos / 1.000 de alcance',result.reachShareRate===null?'—':fmt(result.reachShareRate),result.reachSample ? fmt(result.reachSample)+' posts con alcance único' : 'Sin alcance registrado')
   );
   const cuts = history.followers.filter(row=>row.platform===platform).sort((a,b)=>b.date.localeCompare(a.date));
   get('followers').textContent = !cuts.length ? 'Agrega un primer corte para empezar a medir crecimiento.' :
@@ -204,7 +222,7 @@ function render() {
   const samples = new Map();
   const groupBy = get('groupBy').value;
   for (const row of rows) {
-    const name = row[groupBy] || 'Sin tema';
+    const name = groupBy==='hook'?row.hook+' · '+row.variant:row[groupBy] || 'Sin tema';
     const key = name.toLocaleLowerCase('es');
     if (!samples.has(key)) samples.set(key, {name, rows:[]});
     samples.get(key).rows.push(row);
@@ -212,6 +230,8 @@ function render() {
   const groups = [...samples.values()].map(group => ({
     name:group.name, count:group.rows.length, ...stats(group.rows)
   })).sort((a,b)=>b.median-a.median);
+  const measuredGroups=groups.filter(group=>group.shareSample>=3).sort((a,b)=>b.shareRate-a.shareRate);
+  get('learning').textContent=measuredGroups.length>=2?'Señal observada: '+measuredGroups[0].name+' registra '+fmt(measuredGroups[0].shareRate)+' compartidos por 1.000 '+current.views.toLowerCase()+'. Contrasta temas y fechas antes de repetirlo; esta comparación no demuestra causalidad.':'Para comparar ganchos, registra al menos tres publicaciones por grupo en la misma ventana. Es un punto de partida para probar, no una predicción de viralidad.';
   get('groups').replaceChildren();
   if (!groups.length) get('groups').append(node('p','Las comparaciones aparecerán al guardar mediciones.'));
   for (const group of groups) {
@@ -235,6 +255,8 @@ function render() {
     link.href=row.url;link.target='_blank';link.rel='noopener noreferrer';
     const info = [row.variant,fmt(row.views)+' '+current.views.toLowerCase()];
     if (row.shares!==null) info.push(fmt(row.shares)+' compartidos');
+    if (row.saves!==null) info.push(fmt(row.saves)+' guardados');
+    if (row.hook!=='Sin clasificar') info.push(row.hook);
     if (row.watch!==null) info.push(fmt(row.watch)+' s de media');
     if (row.completion!==null) info.push(fmt(row.completion)+'% completado');
     content.append(link,node('p',info.join(' · '),'small'));

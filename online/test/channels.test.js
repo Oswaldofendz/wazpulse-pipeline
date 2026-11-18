@@ -260,11 +260,13 @@ test('new TikTok market kit is frozen independently of Instagram and legacy snap
   await s.channels.pick(s.story.id,'t',s.story.message_id);
   await s.channels.pick(s.story.id,'i',s.story.message_id);
   const read=platform=>JSON.parse(s.db.native.prepare('SELECT value FROM runtime WHERE key=?').get('channel_social_kit:'+s.story.id+':'+platform).value);
-  assert.equal(read('tiktok').presentation,'tiktok-story-v1');
+  assert.equal(read('tiktok').presentation,'market-story-v2');
   assert.equal(read('tiktok').slides.length,3);
-  assert.equal(read('instagram').slides.length,5);
-  assert.equal(read('instagram').presentation,undefined);
-  assert.equal(await s.channels.refreshDraft(s.story.id,'instagram').then(r=>r.state),'not-editable');
+  assert.equal(read('instagram').slides.length,3);
+  assert.equal(read('instagram').presentation,'market-story-v2');
+  const unchanged=read('tiktok');
+  assert.equal(await s.channels.refreshDraft(s.story.id,'instagram').then(r=>r.state),'draft');
+  assert.deepEqual(read('tiktok'),unchanged);
 });
 test('ambiguous single and album uploads retain buffers and never automatically resend',async()=>{
   for(const code of ['x','i']){

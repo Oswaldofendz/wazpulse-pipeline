@@ -2,6 +2,7 @@ import twitterText from 'twitter-text';
 import {artDirection} from './art-direction.js';
 import {composePortraits,portraitCredits} from './portraits.js';
 import {marketGraph} from './market-graph.js';
+import {marketGrowthHtml} from './growth-layout.js';
 
 const compact = value => String(value || '').replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim();
 const sentences = new Intl.Segmenter('es', {granularity: 'sentence'});
@@ -136,7 +137,7 @@ export function visualBrief(story, {recent = []} = {}) {
     {eyebrow: '04 · CONTRASTA LA FUENTE', title: 'La noticia continúa en la fuente',
       body: 'Consulta la publicación de ' + compact(story.source) + ' y verifica las cifras, la fecha y las actualizaciones. Esta pieza interpreta un titular y su extracto; no sustituye la noticia completa.'}
   ];
-  return {version: 3, style: e.marketSnapshot?'market-v1':'impact-v3', art:e.marketSnapshot?{...art,mediaKind:'market-chart'}:art,
+  return {version: 3, style: e.marketSnapshot?'market-v2':'impact-v3', art:e.marketSnapshot?{...art,mediaKind:'market-chart'}:art,
     ...(e.marketSnapshot?{marketSnapshot:e.marketSnapshot}:{}),model: '@cf/black-forest-labs/flux-1-schnell', steps: 4,
     prompt: prompt.slice(0, 2048), title: compact(e.headline), hook: subtitle, slides,
     ...(art.faceoff?{mediaCredits:portraitCredits}:{}),sourceTitle:title, sourceExtract:extract,
@@ -172,7 +173,7 @@ function legacyVisualHtml(brief, image, index = -1) {
 }
 
 export function visualDimensions(brief, position = 0) {
-  if(brief.style==='market-v1'&&position===0)return {width:1600,height:1000};
+  if(['market-v1','market-v2'].includes(brief.style)&&position===0)return {width:1600,height:1000};
   return ['impact-v2', 'impact-v3'].includes(brief.style) || position !== 0 ? {width: 1080, height: 1350} : {width: 1200, height: 675};
 }
 
@@ -219,6 +220,7 @@ function variedVisualHtml(brief, image, index) {
 }
 
 export function visualHtml(brief, image, index = -1) {
+  if(brief.style==='market-v2')return marketGrowthHtml(brief.marketSnapshot,{platform:'x',story:{id:brief.sourceUrl}});
   if(brief.style==='market-v1')return marketGraph(brief.marketSnapshot,{title:brief.title});
   if (brief.style === 'impact-v3') {
     const html=variedVisualHtml(brief, image, index);

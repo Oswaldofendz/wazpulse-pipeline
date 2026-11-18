@@ -33,7 +33,7 @@ export default {
     if(['/tiktok/connect','/tiktok/connect.js','/tiktok/start','/tiktok/callback'].includes(path))return tiktokAuthRequest(request,env);
     if(path==='/auditoria'||path==='/auditoria/app.js')return auditRequest(request);
     if (path === '/health' && request.method === 'GET') {
-      return json({service: 'wacapital-online', version: '0.8.0', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
+      return json({service: 'wacapital-online', version: '0.9.0', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
     }
     if (path === '/telegram/webhook' && request.method === 'POST') {
       if (!await secretMatches(request.headers.get('X-Telegram-Bot-Api-Secret-Token'), env.TELEGRAM_WEBHOOK_SECRET)) return json({error: 'Unauthorized'}, 401);
@@ -67,7 +67,8 @@ export default {
             const job=await db.first('SELECT state,delivery,error,draft_message,approved_at FROM channel_jobs WHERE story_id=? AND platform=?',id,platform);
             const kit=await db.first('SELECT value FROM runtime WHERE key IN (?,?) ORDER BY CASE WHEN key=? THEN 0 ELSE 1 END LIMIT 1','channel_social_kit:'+id+':'+platform,'channel_social_kit:'+id,'channel_social_kit:'+id+':'+platform);
             const assets=await db.all('SELECT position,length(png) AS bytes,message_id FROM channel_assets WHERE story_id=? AND platform=? ORDER BY position',id,platform);
-            return json({story,job,kit:kit?JSON.parse(kit.value):null,assets});
+            const script=await db.first('SELECT value FROM runtime WHERE key=?','channel_script_status:'+id);
+            return json({story,job,kit:kit?JSON.parse(kit.value):null,assets,script:script?JSON.parse(script.value):null});
           }
         }
         const revision=path.match(/^\/admin\/social-revision\/([a-f0-9]{32})(?:\/(ready|[0-4]))?$/);

@@ -39,7 +39,7 @@ function draftText(story,platform,xCopy=null,savedKit=null) {
     return option.label+'\n'+x.text+'\n'+x.weightedLength+'/280 caracteres ponderados';
   }).join('\n\n') : kit.x.text+'\n\n'+kit.x.weightedLength+'/280 caracteres ponderados';
   const body=platform==='x' ? xText+'\n\n'+(choices.length>1?'Elige el enfoque para preparar una portada.':'Una portada.') :
-    kit[platform].caption+'\n\n'+(kit.quality?.ready===false?'El guion necesita más contexto o una redacción más breve.'+(platform==='tiktok'?' Pulsa «Completar guion» para prepararlo con el titular y el extracto guardados.':' Revisa el texto completo y la fuente.'):kit.slides.length+' láminas:\n'+kit.slides.map((s,i)=>(i+1)+'. '+s.title+'\n'+s.body).join('\n\n'));
+    kit[platform].caption+'\n\n'+(kit.quality?.ready===false?'El guion necesita más contexto o una redacción más breve. Pulsa «Completar guion» para prepararlo con el titular y el extracto guardados.':kit.slides.length+' láminas:\n'+kit.slides.map((s,i)=>(i+1)+'. '+s.title+'\n'+s.body).join('\n\n'));
   const text=['📝 Borrador · '+platforms[codes[platform]],body,
     ...(platform==='x'?['Fuente: '+story.source_url]:[]),
     'Fecha original: '+kit.source.publishedAt.slice(0,10),
@@ -129,7 +129,7 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
       if(platform!=='x'){
         const key='channel_social_kit:'+id+':'+platform;
         let prepared=story;
-        if(platform==='tiktok'&&!JSON.parse(story.editorial).marketSnapshot) {
+        if(['tiktok','instagram'].includes(platform)&&!JSON.parse(story.editorial).marketSnapshot&&!JSON.parse(story.editorial).socialSlides) {
           const copy=await draftTikTok(story,env,db,now());
           if(copy)prepared={...story,editorial:JSON.stringify(copy)};
         }
@@ -139,7 +139,7 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
       const full=draftText(story,platform,xCopy,kit);
       const prepare=platform==='x'?choices.map(option => [{
         text: choices.length===1?'Preparar portada':'Portada · '+option.label, callback_data:'gen'+option.code+':'+id
-      }]):kit.quality?.ready===false?(platform==='tiktok'?[[{text:'Completar guion',callback_data:'writet:'+id}]]:[]):[[{text:'Preparar '+kit.slides.length+' láminas',callback_data:'gen'+code+':'+id}]];
+      }]):kit.quality?.ready===false?[[{text:'Completar guion',callback_data:'write'+code+':'+id}]]:[[ {text:'Preparar '+kit.slides.length+' láminas',callback_data:'gen'+code+':'+id}]];
       const keyboard={inline_keyboard:[...(enabled()?prepare:[]),
         [{text:'Ver texto completo y fuente',callback_data:'info'+code+':'+id}],
         [{text:'Cancelar este formato',callback_data:'cancel'+code+':'+id}]]};
@@ -163,14 +163,14 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
     const story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",id);
     if(!story)return false;
     if(verb==='recover')return recover(id,platform,messageId);
-    if(verb==='write'&&platform==='tiktok'&&job.state==='draft'&&job.delivery==='sent') {
-      if((await db.first("SELECT COUNT(*) AS n FROM channel_assets WHERE story_id=? AND platform='tiktok'",id)).n)return false;
+    if(verb==='write'&&['tiktok','instagram'].includes(platform)&&job.state==='draft'&&job.delivery==='sent') {
+      if((await db.first('SELECT COUNT(*) AS n FROM channel_assets WHERE story_id=? AND platform=?',id,platform)).n)return false;
       const script=await draftTikTok(story,env,db,now(),{retry:true});
-      if(!script){await edit(job,'⏳ TikTok · Guion pendiente\n\nEl cupo de redacción o el contexto disponible no permitió completar el guion. El texto original está guardado.',{inline_keyboard:[[{text:'Completar guion',callback_data:'writet:'+id}],[{text:'Ver texto completo y fuente',callback_data:'infot:'+id}]]});return true;}
+      if(!script){await edit(job,'⏳ '+platforms[code]+' · Guion pendiente\n\nEl cupo de redacción o el contexto disponible no permitió completar el guion. El texto original está guardado.',{inline_keyboard:[[{text:'Completar guion',callback_data:'write'+code+':'+id}],[{text:'Ver texto completo y fuente',callback_data:'info'+code+':'+id}]]});return true;}
       const kit=socialKitV2({...story,editorial:JSON.stringify(script)},{platform});
       if(!kit.quality.ready)return false;
-      await db.set('channel_social_kit:'+id+':tiktok',kit);
-      await edit(job,draftText(story,platform,null,kit)||kit.tiktok.caption,{inline_keyboard:[[{text:'Preparar '+kit.slides.length+' láminas',callback_data:'gent:'+id}],[{text:'Ver texto completo y fuente',callback_data:'infot:'+id}]]});
+      await db.set('channel_social_kit:'+id+':'+platform,kit);
+      await edit(job,draftText(story,platform,null,kit)||kit[platform].caption,{inline_keyboard:[[{text:'Preparar '+kit.slides.length+' láminas',callback_data:'gen'+code+':'+id}],[{text:'Ver texto completo y fuente',callback_data:'info'+code+':'+id}]]});
       return true;
     }
     if(verb==='gen'&&job.state==='draft'&&enabled()) {
@@ -232,7 +232,7 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
   }
   async function refreshDraft(id,platform) {
     const job=await getJob(id,platform);
-    if(!job||platform!=='tiktok'||job.state!=='draft'||job.delivery!=='sent')return {state:'not-editable'};
+    if(!job||!['tiktok','instagram'].includes(platform)||job.state!=='draft'||job.delivery!=='sent')return {state:'not-editable'};
     const assets=await db.first('SELECT COUNT(*) AS n FROM channel_assets WHERE story_id=? AND platform=?',id,platform);
     if(assets.n)return {state:'not-editable'};
     const story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",id);
@@ -242,9 +242,9 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
     const kit=socialKitV2(script?{...story,editorial:JSON.stringify(script)}:story,{platform});
     await db.set('channel_social_kit:'+id+':'+platform,kit);
     await edit(job,draftText(story,platform,null,kit)||kit.tiktok.caption,{inline_keyboard:[
-      [{text:kit.quality.ready?'Preparar '+kit.slides.length+' láminas':'Completar guion',callback_data:(kit.quality.ready?'gent:':'writet:')+id}],
-      [{text:'Ver texto completo y fuente',callback_data:'infot:'+id}],
-      [{text:'Cancelar este formato',callback_data:'cancelt:'+id}]
+      [{text:kit.quality.ready?'Preparar '+kit.slides.length+' láminas':'Completar guion',callback_data:(kit.quality.ready?'gen':'write')+codes[platform]+':'+id}],
+      [{text:'Ver texto completo y fuente',callback_data:'info'+codes[platform]+':'+id}],
+      [{text:'Cancelar este formato',callback_data:'cancel'+codes[platform]+':'+id}]
     ]});
     return {state:'draft',ready:kit.quality.ready,slides:kit.slides.length};
   }
