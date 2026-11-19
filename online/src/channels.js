@@ -13,6 +13,7 @@ const platforms={x:'Twitter/X',i:'Instagram',t:'TikTok'};
 const names={x:'x',i:'instagram',t:'tiktok'};
 const codes={x:'x',instagram:'i',tiktok:'t'};
 const xCopyKey = id => 'channel_x_copy:' + id;
+const tiktokControlKey = id => 'channel_review_control:'+id+':tiktok';
 const jobWithCopy = "SELECT j.*, (SELECT value FROM runtime WHERE key='channel_x_copy:'||j.story_id AND j.platform='x') AS x_copy, COALESCE((SELECT value FROM runtime WHERE key='channel_social_kit:'||j.story_id||':'||j.platform),(SELECT value FROM runtime WHERE key='channel_social_kit:'||j.story_id AND j.platform!='x')) AS social_kit FROM channel_jobs j";
 const xForJob = (story, job) => xPublication(story, selectedXText(job.x_copy));
 const kitForJob = (story,job) => socialKit({...story,social_kit:job.social_kit});
@@ -65,7 +66,43 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
     try { await bot.buttons(cover.message_id, buttons); return true; }
     catch { return false; }
   }
+  async function tiktokControl(job,text,buttons,{create=true}={}) {
+    if(job.platform!=='tiktok'||!['review','approved'].includes(job.state)||job.delivery!=='sent')return null;
+    const story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",job.story_id);
+    if(!story)return null;
+    const assets=await db.all("SELECT position,file_id,message_id FROM channel_assets WHERE story_id=? AND platform='tiktok' ORDER BY position",job.story_id);
+    const count=kitForJob(story,job).slides.length;
+    if(assets.length!==count||assets.some((a,i)=>a.position!==i||!a.file_id||!Number.isSafeInteger(Number(a.message_id))||Number(a.message_id)<=0))return null;
+    const albumMessage=String(assets.at(-1).message_id),key=tiktokControlKey(job.story_id);
+    const row=await db.first('SELECT value FROM runtime WHERE key=?',key);
+    if(row){
+      let saved;try{saved=JSON.parse(row.value);}catch{return {updated:false,uncertain:true};}
+      if(saved.state!=='sent'||saved.albumMessage!==albumMessage||!Number.isSafeInteger(Number(saved.messageId))||Number(saved.messageId)<=0)return {updated:false,uncertain:true};
+      return {messageId:saved.messageId,updated:await edit({draft_message:saved.messageId},text,buttons)};
+    }
+    if(!create)return null;
+    // A group cannot carry sendMediaGroup reply_markup. Send one small, silent
+    // control reply after its confirmed last image. Never resend an ambiguous send.
+    const claim=await db.run('INSERT OR IGNORE INTO runtime(key,value) VALUES(?,?)',key,JSON.stringify({state:'sending',albumMessage,at:now()}));
+    if(!claim.meta?.changes)return {updated:false,uncertain:true};
+    try{
+      const sent=await bot.send(text,buttons,{replyTo:Number(albumMessage),silent:true});
+      if(!Number.isSafeInteger(sent?.message_id)||sent.message_id<=0)throw new ServiceError('telegram-control');
+      const saved={state:'sent',albumMessage,messageId:String(sent.message_id),at:now()};
+      await db.set(key,saved);return {messageId:saved.messageId,updated:true};
+    }catch{await db.set(key,{state:'uncertain',albumMessage,at:now()});return {updated:false,uncertain:true};}
+  }
+  async function refreshReview(id,platform) {
+    const job=await getJob(id,platform);
+    if(!job||platform!=='tiktok'||!['review','approved'].includes(job.state)||job.delivery!=='sent')return {state:'not-editable',updated:false};
+    if(job.state==='approved')return {state:'approved',updated:await refreshTikTok(id)};
+    const story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",id);
+    if(!story)return {state:'approval-required',updated:false};
+    return await showReview(job,story);
+  }
   async function showReview(job,story) {
+    job=await getJob(job.story_id,job.platform);
+    if(job?.state!=='review'||job.delivery!=='sent')return;
     const x=job.platform==='x'?xForJob(story,job):null;
     const kit=x?null:kitForJob(story,job);
     const approveLabel=x?'Aprobar y compartir en X':job.platform==='tiktok'?'Aprobar y compartir en TikTok':'Aprobar versión final';
@@ -75,9 +112,13 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
       {inline_keyboard:[[approval],[{text:'Descartar',callback_data:'cancel'+codes[job.platform]+':'+job.story_id}]]});
     const cover=x?await db.first("SELECT message_id FROM channel_assets WHERE story_id=? AND platform='x' AND position=0 AND length(file_id)>0",job.story_id):null;
     const imageSuccess=await editCoverButtons(cover,{inline_keyboard:[[approval]]});
+    const control=job.platform==='tiktok'?await tiktokControl(job,'✅ TikTok · '+kit.slides.length+' láminas listas\n\n'+kit.title+'\n\nRevisa el carrusel de arriba. Aprueba para abrir el envío a TikTok; no publica automáticamente.',{inline_keyboard:[[approval],[{text:'Ver texto y fuente',callback_data:'infot:'+job.story_id},{text:'Descartar',callback_data:'cancelt:'+job.story_id}]]}):null;
+    const complete=control?control.updated:success&&imageSuccess;
     const saved=await db.run("UPDATE channel_jobs SET error=? WHERE story_id=? AND platform=? AND state='review'",
-      success&&imageSuccess?null:'review-edit-pending',job.story_id,job.platform);
+      control?.uncertain?'review-control-unconfirmed':complete?null:'review-edit-pending',job.story_id,job.platform);
     if(x&&!saved.meta?.changes)await refreshX(job.story_id);
+    if(job.platform==='tiktok'&&!saved.meta?.changes)await refreshTikTok(job.story_id);
+    return {state:'review',updated:Boolean(control?.updated),messageId:control?.messageId||null};
   }
   async function refreshX(id) {
     const job=await getJob(id,'x');
@@ -104,10 +145,11 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
     if (!story) return false;
     const url = await shareTikTokUrl(env, id, now());
     const kit=kitForJob(story,job),caption=kit.tiktok.caption;
-    const success = await edit(job, '✅ TikTok · Carrusel aprobado\n\n' + caption +
-      '\n\n' + (url ? 'Comparte las '+kit.slides.length+' láminas y la descripción desde el botón. Con la cuenta conectada, podrás enviarlas como borrador a TikTok y terminar allí.' : 'Puedes cargar las láminas del grupo anterior en TikTok.'), {
-      inline_keyboard: url ? [[{text: 'Compartir en TikTok', url}], [{text: 'Renovar enlace', callback_data: 'okt:' + id}]] : []
-    });
+    const buttons={inline_keyboard: url ? [[{text: 'Compartir en TikTok', url}], [{text: 'Renovar enlace', callback_data: 'okt:' + id}]] : []};
+    const originalSuccess = await edit(job, '✅ TikTok · Carrusel aprobado\n\n' + caption +
+      '\n\n' + (url ? 'Comparte las '+kit.slides.length+' láminas y la descripción desde el botón. Con la cuenta conectada, podrás enviarlas como borrador a TikTok y terminar allí.' : 'Puedes cargar las láminas del grupo anterior en TikTok.'),buttons);
+    const control=await tiktokControl(job,'✅ TikTok · Carrusel aprobado\n\n'+kit.title+'\n\n'+(url?'Lleva las '+kit.slides.length+' láminas y el texto a TikTok desde el botón.':'El enlace no está disponible; conserva las láminas del grupo.'),buttons);
+    const success=control?control.updated:originalSuccess;
     const attempt=Number(/^share-edit-pending:(\d+)$/.exec(job.error||'')?.[1]||0)+1;
     await db.run("UPDATE channel_jobs SET error=?,lease_until=? WHERE story_id=? AND platform='tiktok' AND state='approved'",
       success?null:attempt<3?'share-edit-pending:'+attempt:'share-edit-failed',success?0:now()+60_000,id);
@@ -156,9 +198,18 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
     const verb=action.slice(0,-1),code=action.at(-1),platform=names[code]||'x',job=await getJob(id,platform);
     if(!job)return false;
     if(job.draft_message!==String(messageId)) {
-      if(action!=='okx'||!['review','approved'].includes(job.state)||job.delivery!=='sent')return false;
-      const cover=await db.first("SELECT 1 AS valid FROM channel_assets WHERE story_id=? AND platform='x' AND position=0 AND message_id=? AND length(file_id)>0",id,String(messageId));
-      if(!cover)return false;
+      if(!['review','approved'].includes(job.state)||job.delivery!=='sent')return false;
+      if(platform==='tiktok'&&['ok','info','cancel'].includes(verb)){
+        const row=await db.first('SELECT value FROM runtime WHERE key=?',tiktokControlKey(id));
+        let control;try{control=row&&JSON.parse(row.value);}catch{return false;}
+        if(control?.state!=='sent'||control.messageId!==String(messageId))return false;
+        const last=await db.first("SELECT message_id FROM channel_assets WHERE story_id=? AND platform='tiktok' ORDER BY position DESC LIMIT 1",id);
+        if(last?.message_id!==control.albumMessage)return false;
+      }else{
+        if(action!=='okx')return false;
+        const cover=await db.first("SELECT 1 AS valid FROM channel_assets WHERE story_id=? AND platform='x' AND position=0 AND message_id=? AND length(file_id)>0",id,String(messageId));
+        if(!cover)return false;
+      }
     }
     const story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",id);
     if(!story)return false;
@@ -198,6 +249,7 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
     } else if(verb==='cancel'&&['draft','review'].includes(job.state)) {
       await db.run("UPDATE channel_jobs SET state='rejected' WHERE story_id=? AND platform=?",id,platform);
       await edit(job,'Formato descartado · '+platforms[code]+'.');
+      if(platform==='tiktok')await tiktokControl(job,'TikTok · Carrusel descartado',{inline_keyboard:[]},{create:false});
       if(platform==='x') {
         const cover=await db.first("SELECT message_id FROM channel_assets WHERE story_id=? AND platform='x' AND position=0",id);
         await editCoverButtons(cover,{inline_keyboard:[]});
@@ -369,5 +421,5 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
       return {state:'blocked'};
     }finally{await db.unlock('visual',owner);}
   }
-  return {pick,action,step,refreshX,refreshTikTok,recover,recoveryNotice,refreshDraft};
+  return {pick,action,step,refreshX,refreshTikTok,refreshReview,recover,recoveryNotice,refreshDraft};
 }

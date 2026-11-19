@@ -1,7 +1,9 @@
 # Borradores de TikTok desde Telegram
 
-El carrusel aprobado muestra «Compartir en TikTok». Su página conserva la
-descripción y las cinco láminas en orden. Con la integración activada, el
+Al terminar la entrega confirmada, el bot añade una respuesta breve y silenciosa
+debajo del álbum con «Aprobar y compartir en TikTok». Tras aprobar, ese mismo
+mensaje muestra «Compartir en TikTok». Su página conserva la descripción y las
+tres a cinco láminas en orden. Con la integración activada, el
 propietario pulsa «Enviar borrador a TikTok»: el servidor usa exclusivamente
 `MEDIA_UPLOAD`, y el usuario termina la edición y publicación en la app,
 desde la notificación de la Bandeja de entrada. La API no devuelve un enlace
@@ -11,6 +13,14 @@ no permite adjuntar fotografías ni garantiza abrir la app.
 La opción de compartir con el menú del móvil sigue disponible. Que TikTok
 aparezca y reciba los archivos depende del teléfono y de su versión; esa
 opción no equivale a la carga oficial como borrador.
+
+El control se vincula al último archivo confirmado y conserva su identificador
+en `channel_review_control:<story_id>:tiktok`. Los reintentos editan ese mismo
+mensaje; una respuesta de envío perdida no provoca otro envío automático.
+El propietario puede aprobar, consultar el texto o descartar desde ese control.
+La aprobación sigue siendo obligatoria antes de generar un enlace de compartir.
+`POST /admin/channel/<story_id>/tiktok/review` repara un carrusel ya entregado sin
+regenerar archivos, aprobarlo ni cargarlo en TikTok; exige el acceso administrativo.
 
 ## Elegibilidad de producción: comprobación del 8 de noviembre de 2026
 

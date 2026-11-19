@@ -6,15 +6,17 @@ import {createImages} from '../src/image-providers.js';
 import {minimalUpdate} from '../src/domain.js';
 import {visualBrief} from '../src/publication.js';
 import {shareXRequest} from '../src/share-x.js';
+import {shareTikTokRequest} from '../src/share-tiktok.js';
 import {createStorage} from '../src/storage.js';
 import {network,telegram,ServiceError} from '../src/io.js';
 import {NOW,setup,callback,decodeUpload} from './helpers.js';
 const JPEG='/9j/'+'A'.repeat(160),PNG=new Uint8Array([137,80,78,71,13,10,26,10,1,2,3]);
 async function fixture(overrides={}) {
   const s=setup({MEDIA_ENABLED:'true',LEGACY_APPROVAL_ENABLED:'false',...overrides});
-  const state={edits:[],keyboards:[],uploads:[],generated:0,rendered:[],instant:NOW,lose:false,loseDraft:false,failButtons:false,failEdits:false};
+  const state={events:[],edits:[],keyboards:[],uploads:[],generated:0,rendered:[],instant:NOW,lose:false,loseDraft:false,failButtons:false,failEdits:false};
   const fetcher=async(url,options={})=>{
     options=await decodeUpload(options);
+    state.events.push(url.split('/').at(-1));
     if(url.endsWith('/editMessageText')){state.edits.push(JSON.parse(options.body));if(state.failEdits)throw Error('edit response lost');return Response.json({ok:true,result:{message_id:100}});}
     if(url.endsWith('/editMessageReplyMarkup')){
       state.keyboards.push(JSON.parse(options.body));
@@ -22,6 +24,7 @@ async function fixture(overrides={}) {
       return Response.json({ok:true,result:{message_id:JSON.parse(options.body).message_id}});
     }
     if(url.endsWith('/sendMessage')&&state.loseDraft)throw Error('uncertain draft');
+    if(url.endsWith('/sendMessage')&&state.loseControl&&JSON.parse(options.body).reply_parameters)throw Error('uncertain control');
     if(url.endsWith('/sendDocument')){
       state.uploads.push(options.body);
       if(state.rateLimited)return Response.json({ok:false,error_code:429,parameters:{retry_after:60}},{status:429});
@@ -182,7 +185,7 @@ test('Instagram and TikTok each send one five-document group, reuse one image an
   }
   assert.equal(s.channelState.generated,1);
   assert.equal(s.channelState.uploads.length,2);
-  assert.equal(s.state.messages.length,3);
+  assert.equal(s.state.messages.length,4);
   await s.channels.action('okt',s.story.id,job(s,'tiktok').draft_message);
   const link=s.channelState.edits.at(-1).reply_markup.inline_keyboard[0][0];
   assert.equal(link.text,'Compartir en TikTok');
@@ -455,4 +458,89 @@ test('failed review edit retries only the existing message, never the confirmed 
   assert.equal((await channels.step()).state,'review');
   assert.equal(job(s).error,null);
   assert.equal(s.channelState.uploads.length,1);
+});
+
+async function readyTikTok(){
+  const s=await fixture({WORKER_ORIGIN:'https://fixture.workers.dev',ADMIN_TOKEN:'fixture-only'});
+  await s.channels.pick(s.story.id,'t',s.story.message_id);
+  await s.channels.action('gent',s.story.id,job(s,'tiktok').draft_message);
+  for(let n=0;n<7;n++)await s.advance();
+  return s;
+}
+const readControl=s=>JSON.parse(s.db.native.prepare('SELECT value FROM runtime WHERE key=?').get('channel_review_control:'+s.story.id+':tiktok').value);
+
+test('TikTok puts one silent approval reply after the complete album and sharing uses those exact frozen images',async()=>{
+  const s=await readyTikTok(),control=readControl(s),message=s.state.messages.at(-1);
+  assert.equal(job(s,'tiktok').state,'review');
+  assert.equal(control.state,'sent');assert.equal(message.disable_notification,true);
+  assert.equal(message.reply_parameters.message_id,505);
+  assert.equal(s.channelState.events.lastIndexOf('sendMessage')>s.channelState.events.lastIndexOf('sendMediaGroup'),true);
+  assert.equal(message.reply_markup.inline_keyboard[0][0].text,'Aprobar y compartir en TikTok');
+  assert.equal(message.reply_markup.inline_keyboard.flat().some(button=>button.url),false);
+  assert.equal(await s.channels.action('okt',s.story.id,'99999'),false);
+  assert.equal(await s.channels.action('gent',s.story.id,control.messageId),false);
+  await s.p.handleUpdate(callback(s.story,{data:'okt:'+s.story.id,from:{id:999},message:{message_id:Number(control.messageId),chat:{id:123}}}));
+  assert.equal(job(s,'tiktok').state,'review');
+  await s.p.handleUpdate(callback(s.story,{data:'okt:'+s.story.id,message:{message_id:Number(control.messageId),chat:{id:123}}}));
+  assert.equal(job(s,'tiktok').state,'approved');
+  const edit=s.channelState.edits.at(-1);assert.equal(String(edit.message_id),control.messageId);
+  const link=edit.reply_markup.inline_keyboard[0][0];assert.equal(link.text,'Compartir en TikTok');
+  const [id,expires,sig]=new URL(link.url).hash.slice(1).split('.');
+  const response=await shareTikTokRequest(new Request('https://fixture.workers.dev/share/tiktok/data',{method:'POST',body:JSON.stringify({id,expires:Number(expires),sig})}),s.env,{now:()=>s.channelState.instant});
+  assert.equal(response.status,200);assert.equal((await response.json()).filenames.length,5);
+  assert.equal(s.channelState.uploads.length,1);assert.equal(s.state.messages.length,3);
+  await s.channels.action('okt',s.story.id,control.messageId);
+  assert.equal(readControl(s).messageId,control.messageId);assert.equal(s.state.messages.length,3);
+  assert.equal(s.db.native.prepare('SELECT COUNT(*) AS n FROM tiktok_uploads').get().n,0);
+});
+
+test('TikTok repairs an older review without approving it, regenerating images or duplicating its control',async()=>{
+  const s=await readyTikTok(),first=readControl(s),count=s.state.messages.length;
+  const repaired=await s.channels.refreshReview(s.story.id,'tiktok');
+  assert.deepEqual(repaired,{state:'review',updated:true,messageId:first.messageId});
+  assert.equal(s.state.messages.length,count);assert.equal(job(s,'tiktok').state,'review');
+  assert.equal(s.channelState.uploads.length,1);assert.equal(s.channelState.generated,1);
+  assert.equal((await s.channels.refreshReview(s.story.id,'x')).updated,false);
+  s.db.native.prepare('DELETE FROM runtime WHERE key=?').run('channel_review_control:'+s.story.id+':tiktok');
+  const legacy=await s.channels.refreshReview(s.story.id,'tiktok');
+  assert.equal(legacy.updated,true);assert.notEqual(legacy.messageId,first.messageId);
+  assert.equal(s.state.messages.length,count+1);assert.equal(s.channelState.uploads.length,1);
+});
+
+test('ambiguous TikTok control delivery keeps the album and never automatically sends another control',async()=>{
+  const s=await fixture({WORKER_ORIGIN:'https://fixture.workers.dev',ADMIN_TOKEN:'fixture-only'});
+  await s.channels.pick(s.story.id,'t',s.story.message_id);
+  await s.channels.action('gent',s.story.id,job(s,'tiktok').draft_message);s.channelState.loseControl=true;
+  for(let n=0;n<7;n++)await s.advance();
+  assert.equal(job(s,'tiktok').state,'review');assert.equal(job(s,'tiktok').delivery,'sent');
+  assert.equal(job(s,'tiktok').error,'review-control-unconfirmed');assert.equal(readControl(s).state,'uncertain');
+  const attempts=s.channelState.events.filter(method=>method==='sendMessage').length;
+  for(let n=0;n<3;n++)assert.equal((await s.channels.refreshReview(s.story.id,'tiktok')).updated,false);
+  assert.equal(s.channelState.events.filter(method=>method==='sendMessage').length,attempts);
+  assert.equal(s.channelState.uploads.length,1);assert.equal((await s.advance()).state,'idle');
+  assert.equal(s.channelState.edits.at(-1).reply_markup.inline_keyboard[0][0].text,'Aprobar y compartir en TikTok');
+});
+
+test('TikTok control edits retry in place and discard removes the visible approval button',async()=>{
+  const s=await readyTikTok(),control=readControl(s),count=s.state.messages.length;
+  s.channelState.failEdits=true;assert.equal((await s.channels.refreshReview(s.story.id,'tiktok')).updated,false);
+  assert.equal(job(s,'tiktok').error,'review-edit-pending');
+  s.channelState.failEdits=false;assert.equal((await s.advance()).state,'review');
+  assert.equal(job(s,'tiktok').error,null);assert.equal(s.state.messages.length,count);
+  assert.equal(s.channelState.uploads.length,1);
+  await s.channels.action('cancelt',s.story.id,control.messageId);
+  assert.equal(job(s,'tiktok').state,'rejected');
+  assert.equal(String(s.channelState.edits.at(-1).message_id),control.messageId);
+  assert.deepEqual(s.channelState.edits.at(-1).reply_markup.inline_keyboard,[]);
+  assert.equal(await s.channels.action('okt',s.story.id,control.messageId),false);
+});
+
+test('TikTok controls cannot authorize a changed album or appear before delivery confirmation',async()=>{
+  const s=await readyTikTok(),control=readControl(s);
+  s.db.native.prepare("UPDATE channel_assets SET message_id='99999' WHERE platform='tiktok' AND position=4").run();
+  assert.equal(await s.channels.action('okt',s.story.id,control.messageId),false);
+  assert.equal(job(s,'tiktok').state,'review');
+  s.db.native.prepare("UPDATE channel_jobs SET delivery='uncertain' WHERE platform='tiktok'").run();
+  assert.equal((await s.channels.refreshReview(s.story.id,'tiktok')).updated,false);
+  assert.equal(await s.channels.action('okt',s.story.id,control.messageId),false);
 });

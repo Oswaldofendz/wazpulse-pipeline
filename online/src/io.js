@@ -87,8 +87,10 @@ export function telegram(env, net) {
       allowed_updates: ['message', 'callback_query'],
       drop_pending_updates: false, max_connections: 1
     }),
-    send: (text, keyboard) => call('sendMessage', {
+    send: (text, keyboard, {replyTo, silent=false}={}) => call('sendMessage', {
       chat_id: env.TELEGRAM_CHAT_ID, text, link_preview_options: {is_disabled: true},
+      ...(silent?{disable_notification:true}:{}),
+      ...(Number.isSafeInteger(replyTo)&&replyTo>0?{reply_parameters:{message_id:replyTo}}:{}),
       ...(keyboard ? {reply_markup: keyboard} : {})
     }),
     answer: (id, text) => call('answerCallbackQuery', {callback_query_id: id, text}),
