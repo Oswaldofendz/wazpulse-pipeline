@@ -3,6 +3,7 @@ import {artDirection} from './art-direction.js';
 import {composePortraits,portraitCredits} from './portraits.js';
 import {marketGraph} from './market-graph.js';
 import {marketGrowthHtml} from './growth-layout.js';
+import {withBrandLogo} from './branding.js';
 
 const compact = value => String(value || '').replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim();
 const sentences = new Intl.Segmenter('es', {granularity: 'sentence'});
@@ -219,7 +220,7 @@ function variedVisualHtml(brief, image, index) {
     </body></html>`;
 }
 
-export function visualHtml(brief, image, index = -1) {
+function visualHtmlRaw(brief, image, index = -1) {
   if(brief.style==='market-v2')return marketGrowthHtml(brief.marketSnapshot,{platform:'x',story:{id:brief.sourceUrl}});
   if(brief.style==='market-v1')return marketGraph(brief.marketSnapshot,{title:brief.title});
   if (brief.style === 'impact-v3') {
@@ -248,4 +249,8 @@ export function visualHtml(brief, image, index = -1) {
   <div class="content">${!hero ? '<div class="eyebrow">' + escapeHtml(slide.eyebrow) + '</div>' : ''}<h1>${escapeHtml(slide.title)}</h1>${slide.body ? '<p>' + escapeHtml(slide.body) + '</p>' : ''}</div>
   <div class="footer"><div class="brand">WaCapital</div><div class="meta">${escapeHtml(brief.sourceHost)} · ${escapeHtml(brief.date)}</div><div>Información, no asesoramiento.</div></div>
   <script>const box=document.querySelector('.content'),title=document.querySelector('h1'),body=document.querySelector('p');let n=0;while(box.scrollHeight>box.clientHeight&&n++<120){const t=parseFloat(getComputedStyle(title).fontSize);if(t>${hero ? '38' : '34'})title.style.fontSize=(t-1)+'px';if(body){const p=parseFloat(getComputedStyle(body).fontSize);if(p>${hero ? '28' : '25'})body.style.fontSize=(p-.5)+'px';}}document.documentElement.dataset.fits=String(box.scrollHeight<=box.clientHeight);</script></body></html>`;
+}
+
+export function visualHtml(brief,image,index=-1) {
+  return withBrandLogo(visualHtmlRaw(brief,image,index),{platform:'x',...visualDimensions(brief,index<0?0:index)});
 }

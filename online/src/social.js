@@ -9,6 +9,7 @@ import {tiktokStoryHtml} from './tiktok-layout.js';
 import {marketStoryV2,MARKET_STORY} from './market-story.js';
 import {growthFrame,marketArt,SOCIAL_GROWTH} from './growth-layout.js';
 import {creativePolicy,growthCaption} from './growth-policy.js';
+import {withBrandLogo} from './branding.js';
 
 const clean = value => String(value || '').replace(/[\u0000-\u001f]/g,' ').replace(/\s+/g,' ').trim();
 const segmenter = new Intl.Segmenter('es',{granularity:'sentence'});
@@ -92,7 +93,7 @@ export function socialDimensions(platform) {
   return {width:1080,height:platform==='tiktok'?1920:1350};
 }
 
-export function socialHtml(kit,image,index,platform) {
+function socialHtmlRaw(kit,image,index,platform) {
   if([MARKET_STORY,SOCIAL_GROWTH].includes(kit.presentation)){
     if(!kit.slides[index]||!Number.isInteger(index)||typeof image!=='string'||!/^[A-Za-z0-9+/=]+$/.test(image)||image.length>2_400_000)throw Error('Invalid social asset');
     const slide=kit.slides[index],art=kit.presentation===MARKET_STORY?marketArt(slide):index===0?(kit.mediaCredits?portraitArt():'<img src="data:image/jpeg;base64,'+image+'" alt="Ilustración editorial de la noticia">'):socialIllustration(slide.visual,index,slide.title+' '+slide.body);
@@ -123,4 +124,8 @@ export function socialHtml(kit,image,index,platform) {
   <div class="footer"><div class="brand">WaCapital</div><div>${escapeHtml(host)} · ${escapeHtml(date)}</div><div class="tag">${cover?'Ilustración con IA · ':''}Borrador para revisión · ${escapeHtml(kit.storyId.slice(0,8))}</div></div>
   <script>for(const box of document.querySelectorAll('.fit')){const text=box.firstElementChild;let n=0;while((box.scrollHeight>box.clientHeight||box.scrollWidth>box.clientWidth)&&n++<130){const size=parseFloat(getComputedStyle(text).fontSize);if(size<=28)break;text.style.fontSize=(size-.5)+'px';}}document.documentElement.dataset.fits=String([...document.querySelectorAll('.fit')].every(x=>x.scrollHeight<=x.clientHeight&&x.scrollWidth<=x.clientWidth));</script></body></html>`;
   return kit.mediaCredits?composePortraits(html).replace('Ilustración con IA · ','Montaje editorial · ').replace('Borrador para revisión · ','Fotos: Daniel Torok / Wikimedia · Borrador · '):html;
+}
+
+export function socialHtml(kit,image,index,platform) {
+  return withBrandLogo(socialHtmlRaw(kit,image,index,platform),{platform,...socialDimensions(platform),legacyMarket:!!kit.marketSnapshot&&![MARKET_STORY,TIKTOK_STORY].includes(kit.presentation)});
 }
