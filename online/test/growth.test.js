@@ -11,9 +11,9 @@ import {NOW} from './helpers.js';
 test('source validation preserves decimal magnitudes across English and Spanish formatting',()=>{
   const source=sourceUnits({title:'Bitcoin dropped 5.02% to 68,238.21 dollars.',snippet:'The source reports the observed movement only.'});
   const script={title:'Bitcoin cae un 5,02%',question:'¿Qué dato falta?',slides:[
-    {title:'Bitcoin: caída del 5,02%',body:'La fuente señala el movimiento.',evidenceIds:['t0']},
+    {title:'Bitcoin: caída del 5,02%',body:'Bitcoin perdió un 5,02%.',evidenceIds:['t0']},
     {title:'Precio de 68.238,21 dólares',body:'Precio citado en el titular.',evidenceIds:['t0']},
-    {title:'Qué está documentado',body:'La fuente describe el movimiento observado.',evidenceIds:['e0']}
+    {title:'El movimiento observado',body:'Se reporta el movimiento observado.',evidenceIds:['e0']}
   ]};
   assert.ok(validateScript(script,source));
   assert.equal(validateScript({...script,title:'Bitcoin cae un 502%'},source),null);

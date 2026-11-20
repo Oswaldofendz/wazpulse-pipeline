@@ -61,7 +61,8 @@ export function createImages(env, {fetcher = fetch, now = Date.now, generate} = 
     const instant = now(), day = new Date(instant).toISOString().slice(0,10);
     await db.run('INSERT OR IGNORE INTO channel_images(story_id,manifest,created_at,updated_at) VALUES(?,?,?,?)',id,JSON.stringify(brief),instant,instant);
     let row = await db.first('SELECT * FROM channel_images WHERE story_id=?',id);
-    if(row.state==='new'&&brief.art?.priceMove&&!brief.marketSnapshot&&brief.art.mediaKind!=='official-portraits'&&env.EDITORIAL_FALLBACK_ENABLED!=='false')return local(id,brief,'source-price-illustration',instant);
+    const sourceDiplomacy=brief.art?.event==='negotiation'&&/europ/i.test(brief.sourceTitle+' '+brief.sourceExtract)&&/russi|rusia/i.test(brief.sourceTitle+' '+brief.sourceExtract)&&/ukrain|ucrania/i.test(brief.sourceTitle+' '+brief.sourceExtract);
+    if(row.state==='new'&&(brief.art?.priceMove||sourceDiplomacy)&&!brief.marketSnapshot&&brief.art.mediaKind!=='official-portraits'&&env.EDITORIAL_FALLBACK_ENABLED!=='false')return local(id,brief,'source-bound-illustration',instant);
     if(brief.art?.mediaKind==='market-chart'&&row.state==='new') {
       await db.run("UPDATE channel_images SET state='ready',image=?,provider='data-chart',updated_at=? WHERE story_id=?",CHART_PIXEL,instant,id);
       return {state:'ready',image:CHART_PIXEL,brief,provider:'data-chart'};

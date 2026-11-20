@@ -170,7 +170,7 @@ test('Telegram unchanged text and keyboard edits are idempotent while other HTTP
   const broken=telegram(env,network(async()=>Response.json({ok:false,error_code:400,description:'Bad Request: message to edit not found'},{status:400})));
   await assert.rejects(()=>broken.buttons(5,{inline_keyboard:[]}));
 });
-test('Instagram and TikTok each send one five-document group, reuse one image and use their own dimensions',async()=>{
+test('Instagram and TikTok each send one group of factual cards, reuse one image and use their own dimensions',async()=>{
   const s=await fixture({WORKER_ORIGIN:'https://fixture.workers.dev',ADMIN_TOKEN:'test-only'});
   for(const [code,platform,height] of [['i','instagram',1350],['t','tiktok',1920]]) {
     await s.channels.pick(s.story.id,code,s.story.message_id);
@@ -178,7 +178,7 @@ test('Instagram and TikTok each send one five-document group, reuse one image an
     for(let n=0;n<7;n++)await s.advance();
     assert.equal(job(s,platform).state,'review');
     const upload=s.channelState.uploads.at(-1);
-    assert.equal(JSON.parse(upload.get('media')).length,5);
+    assert.equal(JSON.parse(upload.get('media')).length,3);
     assert.equal(upload.get('disable_notification'),'true');
     assert.deepEqual(s.channelState.rendered.at(-1).dims,{width:1080,height});
     assert.equal(s.db.native.prepare('SELECT COUNT(*) AS n FROM channel_assets WHERE platform=? AND png IS NOT NULL').get(platform).n,0);
@@ -196,7 +196,7 @@ test('TikTok sharing controls recover by editing the same message and stop after
   const s=await fixture({WORKER_ORIGIN:'https://fixture.workers.dev',ADMIN_TOKEN:'fixture-only'});
   await s.channels.pick(s.story.id,'t',s.story.message_id);
   s.db.native.exec("UPDATE channel_jobs SET state='approved',delivery='sent'");
-  for(let n=0;n<5;n++)s.db.native.prepare("INSERT INTO channel_assets(story_id,platform,position,filename,file_id) VALUES(?,'tiktok',?,?,?)").run(s.story.id,n,'fixture-'+n+'.png','file-'+n);
+  for(let n=0;n<3;n++)s.db.native.prepare("INSERT INTO channel_assets(story_id,platform,position,filename,file_id) VALUES(?,'tiktok',?,?,?)").run(s.story.id,n,'fixture-'+n+'.png','file-'+n);
   const count=s.state.messages.length;
   s.channelState.failEdits=true;
   assert.equal(await s.channels.refreshTikTok(s.story.id),false);
@@ -281,7 +281,7 @@ test('ambiguous single and album uploads retain buffers and never automatically 
     assert.equal(job(s,platform).state,'blocked');
     assert.equal(job(s,platform).delivery,'uncertain');
     assert.equal(s.channelState.uploads.length,1);
-    assert.equal(s.db.native.prepare('SELECT COUNT(*) AS n FROM channel_assets WHERE png IS NOT NULL').get().n,code==='x'?1:5);
+    assert.equal(s.db.native.prepare('SELECT COUNT(*) AS n FROM channel_assets WHERE png IS NOT NULL').get().n,code==='x'?1:3);
   }
 });
 
@@ -473,7 +473,7 @@ test('TikTok puts one silent approval reply after the complete album and sharing
   const s=await readyTikTok(),control=readControl(s),message=s.state.messages.at(-1);
   assert.equal(job(s,'tiktok').state,'review');
   assert.equal(control.state,'sent');assert.equal(message.disable_notification,true);
-  assert.equal(message.reply_parameters.message_id,505);
+  assert.equal(message.reply_parameters.message_id,503);
   assert.equal(s.channelState.events.lastIndexOf('sendMessage')>s.channelState.events.lastIndexOf('sendMediaGroup'),true);
   assert.equal(message.reply_markup.inline_keyboard[0][0].text,'Aprobar y compartir en TikTok');
   assert.equal(message.reply_markup.inline_keyboard.flat().some(button=>button.url),false);
@@ -487,7 +487,7 @@ test('TikTok puts one silent approval reply after the complete album and sharing
   const link=edit.reply_markup.inline_keyboard[0][0];assert.equal(link.text,'Compartir en TikTok');
   const [id,expires,sig]=new URL(link.url).hash.slice(1).split('.');
   const response=await shareTikTokRequest(new Request('https://fixture.workers.dev/share/tiktok/data',{method:'POST',body:JSON.stringify({id,expires:Number(expires),sig})}),s.env,{now:()=>s.channelState.instant});
-  assert.equal(response.status,200);assert.equal((await response.json()).filenames.length,5);
+  assert.equal(response.status,200);assert.equal((await response.json()).filenames.length,3);
   assert.equal(s.channelState.uploads.length,1);assert.equal(s.state.messages.length,3);
   await s.channels.action('okt',s.story.id,control.messageId);
   assert.equal(readControl(s).messageId,control.messageId);assert.equal(s.state.messages.length,3);
@@ -537,7 +537,7 @@ test('TikTok control edits retry in place and discard removes the visible approv
 
 test('TikTok controls cannot authorize a changed album or appear before delivery confirmation',async()=>{
   const s=await readyTikTok(),control=readControl(s);
-  s.db.native.prepare("UPDATE channel_assets SET message_id='99999' WHERE platform='tiktok' AND position=4").run();
+  s.db.native.prepare("UPDATE channel_assets SET message_id='99999' WHERE platform='tiktok' AND position=2").run();
   assert.equal(await s.channels.action('okt',s.story.id,control.messageId),false);
   assert.equal(job(s,'tiktok').state,'review');
   s.db.native.prepare("UPDATE channel_jobs SET delivery='uncertain' WHERE platform='tiktok'").run();

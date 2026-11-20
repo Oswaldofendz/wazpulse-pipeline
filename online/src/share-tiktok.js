@@ -27,7 +27,7 @@ async function approvedCarousel(env, id) {
     WHERE story_id = ? AND platform = 'tiktok' ORDER BY position LIMIT 6
   `, id);
   const saved=story.social_kit?JSON.parse(story.social_kit):null,count=saved?saved.slides?.length:5;
-  if (!Number.isInteger(count)||count<3||count>5||assets.length !== count || assets.some((asset, position) => asset.position !== position ||
+  if (!Number.isInteger(count)||count<2||count>5||assets.length !== count || assets.some((asset, position) => asset.position !== position ||
       !asset.file_id || !/^[\w-]{1,120}\.png$/i.test(asset.filename))) return null;
   const kind = story.image_manifest ? JSON.parse(story.image_manifest).art?.mediaKind : null;
   const title=saved?.version===2&&saved.title?.length<=90?saved.title:null;
@@ -188,7 +188,7 @@ function canShare(payload) {
   catch { return false; }
 }
 function enableSharing() {
-  const ready = files.length >=3 && files.length === data?.filenames.length && canShare({files});
+  const ready = files.length >=2 && files.length === data?.filenames.length && canShare({files});
   get('share').disabled = get('photos').disabled = !ready;
   return ready;
 }
@@ -240,7 +240,7 @@ async function load() {
 }
 
 async function share(withText) {
-  if (files.length <3 || files.length!==data.filenames.length || !canShare({files})) return;
+  if (files.length <2 || files.length!==data.filenames.length || !canShare({files})) return;
   const combined = {files, text: data.text};
   const payload = withText && canShare(combined) ? combined : {files};
   try {

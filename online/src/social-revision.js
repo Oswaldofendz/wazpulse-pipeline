@@ -5,32 +5,36 @@ import {imageBytes} from './share-x.js';
 import {socialKitV2,socialDimensions} from './social.js';
 import {visualBrief} from './publication.js';
 import {createStorage} from './storage.js';
+import {CHART_PIXEL} from './market-graph.js';
 
 export function socialRevisions(env,{fetcher=fetch,now=Date.now}={}) {
   const db=store(env.DB);
   async function create(parentId,input) {
     if(!input||typeof input!=='object'||Array.isArray(input))return {error:'Invalid revision',status:400};
     const platform=input?.platform||'tiktok';
+    const originalArtwork=input.editorialArtwork===true;
     if(!['tiktok','instagram'].includes(platform)||typeof input.title!=='string'||input.title.length>90||!input.title.trim()||
-      typeof input.caption!=='string'||input.caption.length>3500||typeof input.image!=='string'||input.image.length>2_400_000||
-      input.image.length<100||!/^[A-Za-z0-9+/=]+$/.test(input.image)||!Array.isArray(input.slides)||input.slides.length<3||input.slides.length>5) return {error:'Invalid revision',status:400};
+      typeof input.caption!=='string'||input.caption.length>3500||!originalArtwork&&(typeof input.image!=='string'||input.image.length>2_400_000||
+      input.image.length<100||!/^[A-Za-z0-9+/=]+$/.test(input.image))||!Array.isArray(input.slides)||input.slides.length<2||input.slides.length>5) return {error:'Invalid revision',status:400};
     if(input.slides.some(s=>!s||typeof s.title!=='string'||typeof s.body!=='string'||s.title.length>150||s.body.length>260))return {error:'Invalid slide',status:400};
     const parent=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",parentId);
     if(!parent)return {error:'Original approval required',status:409};
     const e={...JSON.parse(parent.editorial),headline:input.title,socialVersion:2,socialTitle:input.title,socialSlides:input.slides,socialCaption:input.caption};
-    const id=(await digest(parentId+'|social-v2|'+platform+'|'+JSON.stringify(e)+'|'+await digest(input.image))).slice(0,32);
+    const image=originalArtwork?CHART_PIXEL:input.image;
+    const id=(await digest(parentId+'|news-v3|'+platform+'|'+JSON.stringify(e)+'|'+await digest(image))).slice(0,32);
     const existing=await db.first('SELECT state,delivery,draft_message FROM channel_jobs WHERE story_id=? AND platform=?',id,platform);
     if(existing)return {id,...existing,created:false};
     const story={...parent,id,editorial:JSON.stringify(e)},kit=socialKitV2(story,{platform});
     if(!kit.quality.ready)return {error:'More source detail required',status:409};
     if(!await createStorage(env,{fetcher,now}).allow(12_000_000))return {error:'Storage paused',status:409};
     const instant=now(),brief=visualBrief(story),snapshot=JSON.stringify(kit);
+    if(originalArtwork)brief.art={...brief.art,mediaKind:'editorial-vector'};
     const statements=[
       env.DB.prepare("INSERT OR IGNORE INTO stories(id,event_key,title,source,source_url,published_at,priority,snippet,assets,state,notification,editorial,created_at,approved_at) SELECT ?,?,title,source,source_url,published_at,priority,snippet,assets,'approved','sent',?,?,? FROM stories WHERE id=? AND state='approved'").bind(id,parent.event_key+':social-revision:'+id,story.editorial,instant,instant,parentId),
       env.DB.prepare("INSERT OR IGNORE INTO channel_jobs(story_id,platform,state,delivery,created_at) VALUES(?,?,'draft','sending',?)").bind(id,platform,instant),
       env.DB.prepare('INSERT OR IGNORE INTO runtime(key,value) VALUES(?,?)').bind('channel_social_kit:'+id,snapshot),
       env.DB.prepare('INSERT OR IGNORE INTO runtime(key,value) VALUES(?,?)').bind('social_revision:'+id,JSON.stringify({parentId,version:2,platform,createdAt:instant})),
-      env.DB.prepare("INSERT OR IGNORE INTO channel_images(story_id,state,manifest,image,provider,created_at,updated_at) VALUES(?,'ready',?,?,'editorial-revision',?,?)").bind(id,JSON.stringify(brief),input.image,instant,instant)
+      env.DB.prepare("INSERT OR IGNORE INTO channel_images(story_id,state,manifest,image,provider,created_at,updated_at) VALUES(?,'ready',?,?,?,?,?)").bind(id,JSON.stringify(brief),image,originalArtwork?'editorial-local':'editorial-revision',instant,instant)
     ];
     const results=await env.DB.batch(statements);
     if(!results[1].meta?.changes)return {id,created:false,state:'existing'};

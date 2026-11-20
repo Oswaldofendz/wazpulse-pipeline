@@ -11,6 +11,7 @@ import {growthFrame,marketArt,SOCIAL_GROWTH} from './growth-layout.js';
 import {creativePolicy,growthCaption} from './growth-policy.js';
 import {withBrandLogo} from './branding.js';
 import {editorialArt} from './editorial-art.js';
+import {NEWS_CAROUSEL,newsFrame} from './news-layout.js';
 
 const clean = value => String(value || '').replace(/[\u0000-\u001f]/g,' ').replace(/\s+/g,' ').trim();
 const segmenter = new Intl.Segmenter('es',{granularity:'sentence'});
@@ -68,11 +69,11 @@ export function socialKitV2(story,{platform}={}) {
   const plan=e.marketSnapshot?(mobile?marketStoryV2(e.marketSnapshot,{platform,story}):{slides:base.slides.map((s,i)=>({...s,visual:i?'news':'company'})),quality:{ready:true,issues:[]}}):socialPlan(story);
   if(mobile&&!e.marketSnapshot&&plan.slides.length&&e.socialQuestion)plan.slides.at(-1).question=e.socialQuestion;
   const caption=mobile?(e.socialCaption||growthCaption(story,plan)):socialDescription(story,plan);
-  if(mobile&&!e.marketSnapshot&&plan.slides.some(s=>s.title.length>75||s.body.length>160))plan.quality={ready:false,issues:[...plan.quality.issues,'mobile-copy-needs-edit']};
+  if(mobile&&!e.marketSnapshot&&plan.slides.some(s=>s.title.length>100||s.body.length>190))plan.quality={ready:false,issues:[...plan.quality.issues,'mobile-copy-needs-edit']};
   if(caption.length>3500)plan.quality={ready:false,issues:[...plan.quality.issues,'caption-needs-edit']};
   const kit={...base,version:2,title:clean(e.socialTitle||plan.slides[0]?.title||base.title),...plan,
     instagram:{...base.instagram,caption},tiktok:{...base.tiktok,caption}};
-  return mobile?{...kit,presentation:e.marketSnapshot?MARKET_STORY:SOCIAL_GROWTH,growth:plan.growth||creativePolicy(story,platform)}:kit;
+  return mobile?{...kit,presentation:e.marketSnapshot?MARKET_STORY:NEWS_CAROUSEL,sourceTitle:story.title,sourceExtract:story.snippet||'',artDirection:artDirection(story),growth:plan.growth||creativePolicy(story,platform)}:kit;
 }
 
 export function socialText(kit) {
@@ -95,6 +96,10 @@ export function socialDimensions(platform) {
 }
 
 function socialHtmlRaw(kit,image,index,platform) {
+  if(kit.presentation===NEWS_CAROUSEL){
+    if(!Number.isInteger(index)||typeof image!=='string'||!/^[A-Za-z0-9+/=]+$/.test(image)||image.length>2400000)throw Error('Invalid social asset');
+    return newsFrame(kit,kit.mediaCredits?portraitArt():'<img src="data:image/jpeg;base64,'+image+'" alt="Ilustración de la noticia">',index,platform);
+  }
   if([MARKET_STORY,SOCIAL_GROWTH].includes(kit.presentation)){
     if(!kit.slides[index]||!Number.isInteger(index)||typeof image!=='string'||!/^[A-Za-z0-9+/=]+$/.test(image)||image.length>2_400_000)throw Error('Invalid social asset');
     const slide=kit.slides[index],art=kit.presentation===MARKET_STORY?marketArt(slide):kit.editorialArt?editorialArt({title:kit.title,art:kit.editorialArt},{index,text:slide.title+' '+slide.body}):index===0?(kit.mediaCredits?portraitArt():'<img src="data:image/jpeg;base64,'+image+'" alt="Ilustración editorial de la noticia">'):socialIllustration(slide.visual,index,slide.title+' '+slide.body);

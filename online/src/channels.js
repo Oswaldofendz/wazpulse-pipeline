@@ -8,6 +8,7 @@ import {shareXUrl,xButtons} from './share-x.js';
 import {shareTikTokUrl} from './share-tiktok.js';
 import {FAST_EDITORIAL_PROVIDER} from './fast-editorial.js';
 import {draftTikTok} from './tiktok-content.js';
+import {NEWS_CAROUSEL} from './news-layout.js';
 
 const platforms={x:'Twitter/X',i:'Instagram',t:'TikTok'};
 const names={x:'x',i:'instagram',t:'tiktok'};
@@ -55,6 +56,16 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
   const images=createImages(env,{fetcher,now,generate}),storage=createStorage(env,{fetcher,now});
   const getJob=(id,p)=>db.first(jobWithCopy+' WHERE j.story_id=? AND j.platform=?',id,p);
   const enabled=()=>env.MEDIA_ENABLED==='true'&&env.PIPELINE_ENABLED==='true';
+  async function currentDraftKit(story,job){
+    const prior=kitForJob(story,job);
+    if(prior.marketSnapshot||prior.presentation===NEWS_CAROUSEL)return prior;
+    const saved=await db.first('SELECT COUNT(*) AS n FROM channel_assets WHERE story_id=? AND platform=?',job.story_id,job.platform);
+    if(saved.n)return prior; // Never mix new and old compositions in one album.
+    const kit=socialKitV2(story,{platform:job.platform});
+    job.social_kit=JSON.stringify(kit);
+    await db.set('channel_social_kit:'+job.story_id+':'+job.platform,kit);
+    return kit;
+  }
   async function edit(job,text,buttons) {
     if(!job.draft_message)return false;
     // Editing an existing message is safe to repeat; sending an upload is not.
@@ -225,7 +236,7 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
       return true;
     }
     if(verb==='gen'&&job.state==='draft'&&enabled()) {
-      if(platform!=='x'&&kitForJob(story,job).quality?.ready===false)return false;
+      if(platform!=='x'&&(await currentDraftKit(story,job)).quality?.ready===false){await refreshDraft(id,platform);return false;}
       const queue=env.DB.prepare("UPDATE channel_jobs SET state='queued' WHERE story_id=? AND platform=? AND state='draft'").bind(id,platform);
       let queued;
       if(platform==='x'&&job.x_copy) {
@@ -355,6 +366,10 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
       if(job.state==='approved')return {state:await (job.platform==='x'?refreshX(job.story_id):refreshTikTok(job.story_id))?'approved':'share-edit-pending'};
       if(job.state==='review'){await showReview(job,story);return {state:'review'};}
       if(job.state==='sending')throw new ServiceError('delivery-uncertain');
+      if(job.platform!=='x'&&(await currentDraftKit(story,job)).quality?.ready===false){
+        await db.run("UPDATE channel_jobs SET state='draft',error=NULL,lease_until=0 WHERE story_id=? AND platform=?",job.story_id,job.platform);
+        await refreshDraft(job.story_id,job.platform);return {state:'source-detail-required'};
+      }
       if(!await storage.allow())return {state:'storage-paused'};
       const prior=await db.all("SELECT manifest FROM channel_images WHERE state='ready' ORDER BY created_at DESC LIMIT 2");
       const result=await images.next(job.story_id,visualBrief(story,{recent:prior.map(r=>JSON.parse(r.manifest))}));

@@ -105,7 +105,7 @@ export async function submitTikTokDraft(env, id, carousel, {fetcher=fetch, now=D
     const allowed = allowStorage ? await allowStorage() : await createStorage(env,{fetcher,now}).allow(10_000_000);
     if (!allowed) throw Error('Storage unavailable');
     const bytes = await convert(env,carousel.assets,fetcher);
-    if (bytes.length<3||bytes.length>5||bytes.length !== carousel.assets.length || bytes.some(b => b.length<4 || b.length>1_900_000 || b[0]!==255 || b[1]!==216 || b.at(-2)!==255 || b.at(-1)!==217)) throw Error('Invalid JPEG');
+    if (bytes.length<2||bytes.length>5||bytes.length !== carousel.assets.length || bytes.some(b => b.length<4 || b.length>1_900_000 || b[0]!==255 || b[1]!==216 || b.at(-2)!==255 || b.at(-1)!==217)) throw Error('Invalid JPEG');
     await env.DB.batch(bytes.map((b,position) => env.DB.prepare('INSERT INTO tiktok_upload_assets(story_id,position,jpeg) VALUES(?,?,?)').bind(id,position,b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength))));
     // Approval and the snapshot must still match after image preparation.
     const current = await db.first("SELECT s.editorial,COALESCE((SELECT value FROM runtime WHERE key='channel_social_kit:'||s.id||':tiktok'),(SELECT value FROM runtime WHERE key='channel_social_kit:'||s.id)) AS social_kit FROM stories s JOIN channel_jobs j ON j.story_id=s.id AND j.platform='tiktok' WHERE s.id=? AND s.state='approved' AND j.state='approved' AND j.delivery='sent'",id);

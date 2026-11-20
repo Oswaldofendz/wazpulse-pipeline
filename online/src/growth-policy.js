@@ -23,7 +23,7 @@ export function creativePolicy(story,platform,{contrast=false}={}) {
 export function growthCaption(story,plan) {
   const e=typeof story.editorial==='string'?JSON.parse(story.editorial):story.editorial;
   const title=cleanText(plan.slides[0]?.title||e.headline);
-  const bodies=plan.slides.slice(1).map(slide=>cleanText(slide.body)).filter(Boolean);
+  const bodies=plan.slides.slice(1).map(slide=>[cleanText(slide.title),cleanText(slide.body)].filter(Boolean).join('. ')).filter(Boolean);
   const question=cleanText(plan.slides.at(-1)?.question||e.socialQuestion);
   const tags=topicTags([title,story.title,...bodies].join(' ')).join(' ');
   return [title,...bodies,question,tags,'Fuente: '+story.source_url].filter(Boolean).join('\n\n');

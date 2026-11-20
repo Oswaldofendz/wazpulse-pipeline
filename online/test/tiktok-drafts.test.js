@@ -8,7 +8,7 @@ import {createStorage} from '../src/storage.js';
 
 const origin='https://fixture.workers.dev',id='b'.repeat(32);
 const jpeg=new Uint8Array([255,216,1,2,255,217]);
-async function fixture() {
+async function fixture(count=5) {
   const s=setup({ADMIN_TOKEN:'fixture-admin-secret',WORKER_ORIGIN:origin,TIKTOK_CLIENT_KEY:'fixture-client',
     TIKTOK_CLIENT_SECRET:'fixture-client-secret',TIKTOK_UPLOAD_ENABLED:'true',TIKTOK_MEDIA_VERIFIED:'true'});
   const state={instant:NOW,init:[],status:[],token:[],refresh:[],profile:0,converted:0,convertFailed:false,
@@ -54,7 +54,8 @@ async function fixture() {
     .run(id,id,'Noticia de prueba','https://www.coindesk.com/news/fixture',NOW,editorial,NOW);
   s.db.native.prepare("INSERT INTO channel_jobs(story_id,platform,state,delivery,created_at) VALUES(?,'tiktok','approved','sent',?)").run(id,NOW);
   const insert=s.db.native.prepare("INSERT INTO channel_assets(story_id,platform,position,filename,file_id) VALUES(?,'tiktok',?,?,?)");
-  for(let n=4;n>=0;n--)insert.run(id,n,'slide-'+n+'.png','file-'+n);
+  for(let n=count-1;n>=0;n--)insert.run(id,n,'slide-'+n+'.png','file-'+n);
+  if(count!==5)s.db.native.prepare('INSERT INTO runtime(key,value) VALUES(?,?)').run('channel_social_kit:'+id+':tiktok',JSON.stringify({version:2,title:'Dos hechos documentados',slides:Array.from({length:count},(_,i)=>({title:'Hecho '+i})),tiktok:{caption:'Dos hechos documentados en la fuente.'}}));
   const link=new URL(await shareTikTokUrl(s.env,id,NOW));
   const [storyId,expires,sig]=link.hash.slice(1).split('.');
   const payload={id:storyId,expires:Number(expires),sig};
@@ -68,6 +69,14 @@ async function fixture() {
   });
   return {...s,state,auth,begin,complete,connect,serve,options};
 }
+
+test('a two-card factual carousel keeps its share button and uploads exactly two images after owner approval',async()=>{
+  const s=await fixture(2);await s.connect();
+  const data=await (await s.serve('data')).json();assert.equal(data.filenames.length,2);
+  assert.equal((await (await s.serve('draft')).json()).state,'processing');
+  assert.equal(s.state.init.length,1);assert.equal(s.state.init[0].body.source_info.photo_images.length,2);
+  await s.serve('draft');assert.equal(s.state.init.length,1);
+});
 
 test('TikTok OAuth is owner initiated, browser bound, single use and encrypted at rest',async()=>{
   const s=await fixture();

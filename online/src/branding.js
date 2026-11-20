@@ -3,9 +3,12 @@ import {waCapitalLogo} from '../assets/brand-logo-transparent.js';
 // Reuse the logo cutout on every graphic; no per-post image generation or
 // remote fetch is needed. Alpha-based shadows keep white lettering legible.
 export function withBrandLogo(html,{platform,width=1080,height=1350,legacyMarket=false}={}) {
-  if(!['x','tiktok'].includes(platform)||html.includes('data-wa-logo="1"'))return html;
+  if(!['x','tiktok','instagram'].includes(platform)||html.includes('data-wa-logo="1"'))return html;
   let placement,spacing='';
-  if(platform==='tiktok'){
+  if(html.includes('data-brand-layout="news-v3"')){
+    placement=`left:64px;top:${platform==='tiktok'?124:50}px;width:104px;height:104px`;
+  }else if(platform==='instagram')return html;
+  else if(platform==='tiktok'){
     placement=`left:76px;top:${legacyMarket?316:330}px;width:${legacyMarket?88:128}px;height:${legacyMarket?88:128}px`;
     spacing=legacyMarket?'.brand,.stamp{left:188px!important}':'.brand b,main>header>.brand{padding-left:160px!important}.chapter{left:160px}main.safe>.eyebrow{left:160px}';
   }else if(height>width){
