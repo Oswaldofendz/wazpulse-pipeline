@@ -313,6 +313,22 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
     await edit(job,'⏳ Recuperando '+platforms[codes[platform]]+'\n\nEl archivo guardado está en cola para una nueva entrega.');
     return true;
   }
+  async function resumeImage(id){
+    if(!enabled())return {state:'disabled',resumed:0};
+    const owner=crypto.randomUUID(),instant=now();if(!await db.lock('visual',owner,instant,90000))return {state:'busy',resumed:0};
+    try{
+      const story=await db.first("SELECT * FROM stories WHERE id=? AND state='approved'",id);
+      if(!story)return {state:'approval-required',resumed:0};
+      const assets=await db.first('SELECT COUNT(*) AS n FROM channel_assets WHERE story_id=?',id);
+      const approved=await db.first("SELECT COUNT(*) AS n FROM channel_jobs WHERE story_id=? AND (approved_at IS NOT NULL OR state IN ('approved','review','sending') OR delivery='uncertain')",id);
+      if(assets.n||approved.n)return {state:'not-editable',resumed:0};
+      const jobs=await db.all("SELECT platform FROM channel_jobs WHERE story_id=? AND delivery='sent' AND (state IN ('queued','rendering') OR (state='blocked' AND error IN ('cloudflare-unavailable','ai-binding','ai-image','horde-timeout','horde-unavailable','horde-submission-uncertain')))",id);
+      if(!jobs.length)return {state:'not-editable',resumed:0};
+      await db.run("UPDATE channel_images SET state='fallback',manifest=?,image=NULL,provider=NULL,request_id=NULL,error=NULL,updated_at=? WHERE story_id=?",JSON.stringify(visualBrief(story)),instant,id);
+      for(const job of jobs)await db.run("UPDATE channel_jobs SET state='queued',lease_until=0,error=NULL WHERE story_id=? AND platform=? AND delivery='sent'",id,job.platform);
+      return {state:'queued',resumed:jobs.length};
+    }finally{await db.unlock('visual',owner);}
+  }
   async function renderPng(html,dimensions) {
     if(render)return new Uint8Array(await render(html,dimensions));
     const {launch}=await import('@cloudflare/playwright');
@@ -345,15 +361,14 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
       if(result.state==='blocked')throw new ServiceError(result.reason);
       if(result.state==='daily-limit'&&job.error!=='quota-notice') {
         const edited=await edit(job,'⏳ '+platforms[codes[job.platform]]+' · Sin cupo de imagen disponible\n\n'+
-          (result.reason==='horde-subject-restricted'?'Esta noticia cripto no puede usar el respaldo por sus condiciones de uso. ':'')+
-          'El borrador está guardado. Se comprobará el cupo de Cloudflare al reiniciarse el día UTC.');
+          'No hay otro respaldo habilitado. El borrador está guardado; revisa la configuración de proveedores.');
         if(edited)await db.run("UPDATE channel_jobs SET error='quota-notice' WHERE story_id=? AND platform=?",job.story_id,job.platform);
       }
       if(result.state==='daily-limit')await db.run('UPDATE channel_jobs SET lease_until=? WHERE story_id=? AND platform=?',Date.parse(new Date(instant+86_400_000).toISOString().slice(0,10)+'T00:00:00Z'),job.story_id,job.platform);
       else if(result.state==='pending')await db.run('UPDATE channel_jobs SET lease_until=? WHERE story_id=? AND platform=?',instant+60_000,job.story_id,job.platform);
       if(result.provider==='horde'&&job.error!=='horde-queue-notice') {
-        const edited=await edit(job,'⏳ '+platforms[codes[job.platform]]+' · Esperando imagen\n\nSe agotó el cupo de Cloudflare. El respaldo gratuito está en cola; puede tardar varios minutos.'+
-          '\nSe detendrá tras 45 minutos de espera. El borrador sigue guardado.');
+        const edited=await edit(job,'⏳ '+platforms[codes[job.platform]]+' · Esperando imagen\n\nEl proveedor principal no pudo completar la imagen. El respaldo gratuito está en cola.'+
+          '\nSi tarda demasiado, se usará una ilustración editorial de la noticia.');
         if(edited)await db.run("UPDATE channel_jobs SET error='horde-queue-notice' WHERE story_id=? AND platform=?",job.story_id,job.platform);
       }
       if(result.state!=='ready')return result;
@@ -366,7 +381,8 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
         const position=assets.length;
         renderPosition=position;
         await db.set('visual_last_browser',instant);
-        const html=job.platform==='x'?visualHtml(result.brief,result.image):socialHtml(kit,result.image,position,job.platform);
+        const renderedKit=result.brief.art?.mediaKind==='editorial-vector'?{...kit,editorialArt:result.brief.art}:kit;
+        const html=job.platform==='x'?visualHtml(result.brief,result.image):socialHtml(renderedKit,result.image,position,job.platform);
         const dims=job.platform==='x'?visualDimensions(result.brief,0):socialDimensions(job.platform);
         const png=await renderPng(html,dims);
         if(png.length>1_900_000||![137,80,78,71,13,10,26,10].every((n,i)=>png[i]===n))throw new ServiceError('png-size-or-format');
@@ -375,7 +391,7 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
         return {state:'rendered',platform:job.platform,position};
       }
       await db.run("UPDATE channel_jobs SET state='sending',delivery='sending' WHERE story_id=? AND platform=?",job.story_id,job.platform);
-      const kind=result.brief.art?.mediaKind==='market-chart'?'Gráfico con datos · Corte '+new Date(result.brief.marketSnapshot.at).toISOString().slice(11,16)+' UTC':result.brief.art?.mediaKind==='official-portraits'?'Montaje editorial · Retratos oficiales':'Ilustración con IA';
+      const kind=result.brief.art?.mediaKind==='market-chart'?'Gráfico con datos · Corte '+new Date(result.brief.marketSnapshot.at).toISOString().slice(11,16)+' UTC':result.brief.art?.mediaKind==='official-portraits'?'Montaje editorial · Retratos oficiales':result.brief.art?.mediaKind==='editorial-vector'?'Ilustración editorial':'Ilustración con IA';
       const x=job.platform==='x'?xForJob(story,job):null,caption=x?'🖼 Twitter/X · Borrador\n\n'+x.text+'\n\n'+x.weightedLength+'/280 · '+kind:
         platforms[codes[job.platform]]+' · '+count+' láminas · Borrador\n'+JSON.parse(story.editorial).headline+'\n'+kind+' · '+job.story_id.slice(0,8);
       const sent=job.platform==='x'?[await bot.imageDocument(new Uint8Array(assets[0].png),assets[0].filename,caption)]:
@@ -421,5 +437,5 @@ export function createChannels(env,{fetcher=fetch,now=Date.now,render,generate}=
       return {state:'blocked'};
     }finally{await db.unlock('visual',owner);}
   }
-  return {pick,action,step,refreshX,refreshTikTok,refreshReview,recover,recoveryNotice,refreshDraft};
+  return {pick,action,step,refreshX,refreshTikTok,refreshReview,recover,recoveryNotice,refreshDraft,resumeImage};
 }

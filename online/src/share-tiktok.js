@@ -31,7 +31,7 @@ async function approvedCarousel(env, id) {
       !asset.file_id || !/^[\w-]{1,120}\.png$/i.test(asset.filename))) return null;
   const kind = story.image_manifest ? JSON.parse(story.image_manifest).art?.mediaKind : null;
   const title=saved?.version===2&&saved.title?.length<=90?saved.title:null;
-  return {story, assets, text: tiktokCaption(story), ...(title?{title}:{}),isAigc:!['market-chart','official-portraits'].includes(kind)};
+  return {story, assets, text: tiktokCaption(story), ...(title?{title}:{}),isAigc:!['market-chart','official-portraits','editorial-vector'].includes(kind)};
 }
 
 function sign(env, id, expires, carousel) {

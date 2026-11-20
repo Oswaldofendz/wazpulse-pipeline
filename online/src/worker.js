@@ -12,6 +12,7 @@ import {tiktokMediaRequest} from './tiktok-drafts.js';
 import {auditRequest} from './audit.js';
 import {createFast} from './fast.js';
 import {socialRevisions} from './social-revision.js';
+import {imageProvidersStatus} from './image-backups.js';
 
 const json = (data, status = 200) => Response.json(data, {status, headers: {'Cache-Control': 'no-store'}});
 const active = env => env.PIPELINE_ENABLED === 'true';
@@ -33,7 +34,7 @@ export default {
     if(['/tiktok/connect','/tiktok/connect.js','/tiktok/start','/tiktok/callback'].includes(path))return tiktokAuthRequest(request,env);
     if(path==='/auditoria'||path==='/auditoria/app.js')return auditRequest(request);
     if (path === '/health' && request.method === 'GET') {
-      return json({service: 'wacapital-online', version: '0.9.3', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
+      return json({service: 'wacapital-online', version: '0.10.0', enabled: active(env), databaseBound: Boolean(env.DB), mediaEnabled: env.MEDIA_ENABLED === 'true'});
     }
     if (path === '/telegram/webhook' && request.method === 'POST') {
       if (!await secretMatches(request.headers.get('X-Telegram-Bot-Api-Secret-Token'), env.TELEGRAM_WEBHOOK_SECRET)) return json({error: 'Unauthorized'}, 401);
@@ -56,6 +57,9 @@ export default {
       if (!env.DB) return json({error: 'Database not configured'}, 503);
       try {
         const pipeline = createPipeline(env);
+        if(path==='/admin/image-providers'&&request.method==='GET')return json({costPolicy:env.IMAGE_COST_POLICY==='allow-paid'?'allow-paid':'free-only',providers:imageProvidersStatus(env),budget:await store(env.DB).all('SELECT * FROM image_provider_budget ORDER BY day DESC LIMIT 20')});
+        const imageRecovery=path.match(/^\/admin\/image-recovery\/([a-f0-9]{32})$/);
+        if(imageRecovery&&request.method==='POST')return json(await createChannels(env).resumeImage(imageRecovery[1]));
         const channelPath=path.match(/^\/admin\/channel\/([a-f0-9]{32})\/(x|tiktok|instagram)(?:\/(notice|draft|review))?$/);
         if(channelPath) {
           const [,id,platform,action]=channelPath;

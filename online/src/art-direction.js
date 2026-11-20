@@ -1,12 +1,18 @@
 // Direction is derived from source data, not from a model's financial claims.
 // Persist it in the manifest so retries never change an approved composition.
+import {headlineMovement,newsSubjects} from './news-subject.js';
 const themes = {
+  crimson: {accent:'#ff4f70',rule:'#ff345a',lighting:'deep red market-risk lighting, charcoal shadows and restrained gold highlights'},
   amber: {accent: '#ffbf69', rule: '#fb923c', lighting: 'warm amber practical light and deep navy shadows'},
   jade: {accent: '#80ead0', rule: '#2dd4bf', lighting: 'jade reflections, charcoal shadows and soft neutral daylight'},
   violet: {accent: '#c4b5fd', rule: '#a78bfa', lighting: 'muted violet highlights, silver textures and dark plum shadows'},
   daylight: {accent: '#7dd3fc', rule: '#38bdf8', lighting: 'natural window light, warm ivory surfaces and ink-blue shadows'}
 };
 const scenes = {
+  negotiation: [
+    'a diplomatic roundtable with distinct delegations representing the countries named in the headline, a negotiation setting, no combat',
+    'an editorial view of a summit meeting table and microphones, the countries named in the source as the focus, no invented agreement'
+  ],
   breach: [
     'a fractured anonymous payment card with a gold chip, translucent customer identity records and linked wallet nodes escaping as red data fragments, conceptual customer data breach',
     'anonymous payment card, house-address record and digital wallet outline linked by exposed red data paths, editorial illustration of personal information exposure',
@@ -59,17 +65,8 @@ const scenes = {
   ]
 };
 const normal = text => String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-function headlinePriceMove(text) {
-  const headline = normal(text).replace(/^[^\p{L}\p{N}]+/u, '').replace(/\s+/g, ' ');
-  const subject = /^(?:(?:el|la|las|los) )?(?:(?:precio de|acciones de|shares of|price of) )?(bitcoin|btc|ethereum|ether|eth|solana|sol|xrp|nvidia|nvda|tesla|tsla|nasdaq|s&p\s*500|gold|oro|oil|petroleo)\b(?:['’]s)?(?: (?:price|shares|stock|futures|cotizacion))?(?: (?:se|hoy|sharply|nearly|briefly|ligeramente)){0,3} /.exec(headline);
-  if (!subject) return null;
-  const action = headline.slice(subject[0].length);
-  if (/^falls? short\b/.test(action)) return null;
-  if (/^(?:slips?|falls?|drops?|tumbles?|plunges?|sinks?|slides?|retreats?|declines?|dips?|loses?|cae|baja|retrocede|desploma|hunde|cede|pierde)\b/.test(action)) return {asset: subject[1], direction: 'down'};
-  if (/^(?:rises?|gains?|jumps?|surges?|rall(?:y|ies)|climbs?|rebounds?|recovers?|sube|avanza|rebota|repunta|recupera|gana)\b/.test(action)) return {asset: subject[1], direction: 'up'};
-  return null;
-}
 function eventOf(text) {
+  if(/\btalks\b|\bsummit\b|\bnegotiat\w*|\bnegociac\w*|\bdialogo\b|\bcumbre\b/.test(text)&&/\bwar\b|\bpeace\b|\brussia\b|\bukraine\b|\bleaders\b|\bguerra\b|\bpaz\b/.test(text))return 'negotiation';
   if (/\btrump\b|\bvance\b|\belection\w*|\belectoral\w*|\bpresident\w*|\bwhite house\b|\bcasa blanca\b|\bdiplomac\w*|\biran\b|\bwar\b|\bguerra\b/.test(text) &&
       !/\bbitcoin\b|\bbtc\b|\bethereum\b|\bcrypto\w*|\bcripto\w*/.test(text)) return 'politics';
   const recovery = /\breopen\w*|\bresum\w*|\brestor\w*|\breanud\w*|\breabr\w*|\brestablec\w*|\bopens?\b.{0,32}\bwithdrawals?\b|\babre\w*\b.{0,24}\bretiros?\b/;
@@ -100,7 +97,8 @@ function pick(items, seed, recent) {
 
 export function artDirection(story, recent = []) {
   // The headline takes precedence: "reopens after hack" is a recovery, not a theft scene.
-  const movement = headlinePriceMove(story.title);
+  const movement = headlineMovement(story.title);
+  const subjects = newsSubjects(story.title);
   const event = movement ? 'price-' + movement.direction : eventOf(normal(story.title)) || eventOf(normal(story.snippet)) || 'market';
   const seed = hash(String(story.id || story.source_url || '') + '|' + story.title);
   const prior = recent.map(brief => brief?.art).filter(Boolean).slice(0, 2);
@@ -110,13 +108,14 @@ export function artDirection(story, recent = []) {
   ] : scenes[event];
   const sceneIds = choices.map((_, i) => event + '-' + i);
   const sceneId = pick(sceneIds, seed, prior.map(x => x.sceneId));
-  const theme = pick(Object.keys(themes), seed >>> 3, prior.map(x => x.theme));
+  const theme = movement?(movement.direction==='down'?'crimson':'jade'):pick(Object.keys(themes), seed >>> 3, prior.map(x => x.theme));
   const layout = pick(['poster', 'masthead', 'split'], seed >>> 6, prior.map(x => x.layout));
   // Only the source's named asset may receive its own symbol. Altcoins are not Bitcoin.
   const bitcoin = event !== 'politics' && /\bbitcoin\b|\bbtc\b/i.test(story.title);
   const faceoff = event === 'politics' && /\btrump\b/.test(normal(story.title)) && /\bvance\b/.test(normal(story.title)) &&
     /critique|critic\w*|tightrope|rompe|ruptura|enfrent\w*|versus|\bvs\b|blam\w*|culp\w*|clash|rift/.test(normal(story.title+' '+story.snippet));
   return {
+    directionVersion:2,subjects,
     event, sceneId: faceoff ? 'politics-faceoff' : sceneId, theme, layout:faceoff?'masthead':layout, ...themes[theme],
     scene: faceoff ? 'Donald Trump on the left, elderly man with swept blond hair, facing JD Vance on the right, younger man about forty with short dark brown hair and a full brown beard, recognizable editorial painted portraits, symmetrical boxing-poster-style political face-off composition, formal suits, no real fight, plain divided backdrop' : choices[Number(sceneId.split('-').at(-1))],
     ...(movement ? {priceMove: movement} : {}),

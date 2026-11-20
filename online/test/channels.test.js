@@ -393,32 +393,32 @@ test('Cloudflare cap opens the free Horde queue once, polls across ticks and per
   const body=JSON.parse(s.providerState.calls[0].options.body);
   assert.equal(body.params.n,1);assert.equal(body.nsfw,false);assert.equal(body.r2,false);
 });
-test('Cloudflare is always first; only quota failures open fallback, not invalid images or outages',async()=>{
+test('Cloudflare is first for news artwork and both quota errors and outages open the backup chain',async()=>{
   for(const failure of [null,Object.assign(Error('429 quota'),{status:429}),Error('service unavailable')]) {
     const s=await imageFixture({DAILY_VISUAL_LIMIT:'3'});
     let calls=0;
     const image=createImages(s.env,{fetcher:async()=>{throw Error('fallback only on next tick');},now:()=>NOW,generate:async()=>{calls++;if(failure)throw failure;return JPEG;}});
-    assert.equal((await image.next(s.story.id,s.brief)).state,failure?(failure.status===429?'pending':'blocked'):'ready');
+    assert.equal((await image.next(s.story.id,s.brief)).state,failure?'pending':'ready');
     assert.equal(calls,1);
   }
 });
 test('lost Horde submission is never repeated; attempts include failures',async()=>{
   const s=await imageFixture();s.providerState.lose=true;
-  assert.equal((await s.images.next(s.story.id,s.brief)).state,'blocked');
-  assert.equal((await s.images.next(s.story.id,s.brief)).state,'blocked');
+  assert.equal((await s.images.next(s.story.id,s.brief)).provider,'editorial-local');
+  assert.equal((await s.images.next(s.story.id,s.brief)).provider,'editorial-local');
   assert.equal(s.providerState.calls.length,1);
   assert.equal(s.db.native.prepare('SELECT used FROM image_provider_budget').get().used,1);
 });
 test('Horde is opt-in, has its own hard daily cap, and times out instead of making another request',async()=>{
   for(const overrides of [{HORDE_ENABLED:'false'},{DAILY_HORDE_LIMIT:'0'}]){
     const s=await imageFixture(overrides);
-    assert.equal((await s.images.next(s.story.id,s.brief)).state,'daily-limit');
+    assert.equal((await s.images.next(s.story.id,s.brief)).provider,'editorial-local');
     assert.equal(s.providerState.calls.length,0);
   }
   const s=await imageFixture();
   await s.images.next(s.story.id,s.brief);
   s.providerState.instant+=46*60_000;
-  assert.equal((await s.images.next(s.story.id,s.brief)).state,'blocked');
+  assert.equal((await s.images.next(s.story.id,s.brief)).provider,'editorial-local');
   assert.equal(s.providerState.calls.filter(c=>c.url.endsWith('/generate/async')).length,1);
 });
 
@@ -426,8 +426,8 @@ test('crypto stories cannot consume Horde quota or submit prompts to that provid
   const s=await imageFixture();
   const brief={...s.brief,sourceTitle:'Binance resumes crypto withdrawals'};
   const result=await s.images.next(s.story.id,brief);
-  assert.equal(result.state,'daily-limit');
-  assert.equal(result.reason,'horde-subject-restricted');
+  assert.equal(result.state,'ready');assert.equal(result.provider,'editorial-local');
+  assert.equal(result.brief.fallbackReason,'horde-subject-restricted');
   assert.equal(s.providerState.calls.length,0);
   assert.equal(s.db.native.prepare('SELECT COUNT(*) AS n FROM image_provider_budget').get().n,0);
 });

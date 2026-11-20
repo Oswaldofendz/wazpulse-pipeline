@@ -10,6 +10,7 @@ import {marketStoryV2,MARKET_STORY} from './market-story.js';
 import {growthFrame,marketArt,SOCIAL_GROWTH} from './growth-layout.js';
 import {creativePolicy,growthCaption} from './growth-policy.js';
 import {withBrandLogo} from './branding.js';
+import {editorialArt} from './editorial-art.js';
 
 const clean = value => String(value || '').replace(/[\u0000-\u001f]/g,' ').replace(/\s+/g,' ').trim();
 const segmenter = new Intl.Segmenter('es',{granularity:'sentence'});
@@ -96,8 +97,9 @@ export function socialDimensions(platform) {
 function socialHtmlRaw(kit,image,index,platform) {
   if([MARKET_STORY,SOCIAL_GROWTH].includes(kit.presentation)){
     if(!kit.slides[index]||!Number.isInteger(index)||typeof image!=='string'||!/^[A-Za-z0-9+/=]+$/.test(image)||image.length>2_400_000)throw Error('Invalid social asset');
-    const slide=kit.slides[index],art=kit.presentation===MARKET_STORY?marketArt(slide):index===0?(kit.mediaCredits?portraitArt():'<img src="data:image/jpeg;base64,'+image+'" alt="Ilustración editorial de la noticia">'):socialIllustration(slide.visual,index,slide.title+' '+slide.body);
-    return growthFrame(kit,art,index,platform);
+    const slide=kit.slides[index],art=kit.presentation===MARKET_STORY?marketArt(slide):kit.editorialArt?editorialArt({title:kit.title,art:kit.editorialArt},{index,text:slide.title+' '+slide.body}):index===0?(kit.mediaCredits?portraitArt():'<img src="data:image/jpeg;base64,'+image+'" alt="Ilustración editorial de la noticia">'):socialIllustration(slide.visual,index,slide.title+' '+slide.body);
+    const renderedKit=kit.editorialArt?.priceMove?{...kit,slides:kit.slides.map(s=>({...s,negative:kit.editorialArt.priceMove.direction==='down'}))}:kit;
+    return growthFrame(renderedKit,art,index,platform);
   }
   if(platform==='tiktok'&&kit.presentation===TIKTOK_STORY)return tiktokStoryHtml(kit,image,index);
   if(kit.marketSnapshot)return marketGraph(kit.marketSnapshot,{title:kit.title,platform,index,safe:kit.version===2});
